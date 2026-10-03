@@ -15,7 +15,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The signal bus — tiny files any other program can watch.
+"""The signal bus, tiny files any other program can watch.
 
 The voice line leaves notes; faces read the notes. That one dumb trick
 is the whole integration surface:
@@ -23,7 +23,7 @@ is the whole integration surface:
   .voice_state        idle | listening | thinking | speaking
   .voice_waveform     JSON {ts, samples: [64 floats]} while audio plays
   .voice_loading_pid  exists while the thinking sound is playing
-  .voice_rate_limits  JSON {window: {utilization, resets_at}} — only
+  .voice_rate_limits  JSON {window: {utilization, resets_at}}, only
                       written when show_usage is on
 
 Written to signals_dir (default: the repo root). Visualizers built on
@@ -32,7 +32,7 @@ this contract just work.
 THE BAREHANDS SEAM: set barehands_state_dir in backtalk.json to a
 barehands checkout's state/ folder and the same signals are mirrored in
 its format (state/state as a bare word, state/wave.json normalized
-0..1) — the on-screen ring becomes your agent's face with zero glue.
+0..1), the on-screen ring becomes your agent's face with zero glue.
 
 Every write is wrapped: the bus must never crash the voice line.
 """
@@ -53,6 +53,7 @@ _LOADING_PID_FILE = os.path.join(_DIR, ".voice_loading_pid")
 _DIRECTION_FILE = os.path.join(_DIR, ".voice_direction")
 _REPLY_DONE_FILE = os.path.join(_DIR, ".voice_reply_done")
 _RATE_LIMIT_FILE = os.path.join(_DIR, ".voice_rate_limits")
+_TASKS_FILE = os.path.join(_DIR, ".voice_tasks")
 
 _BH = CFG.get("barehands_state_dir") or ""
 _BH_STATE = os.path.join(_BH, "state") if _BH else ""
@@ -66,7 +67,7 @@ _static_proc: subprocess.Popen | None = None
 
 
 def set_state(name: str):
-    """Write the state. Never raises — the show must go on."""
+    """Write the state. Never raises, the show must go on."""
     try:
         with open(_STATE_FILE, "w") as f:
             f.write(name)
@@ -80,8 +81,24 @@ def set_state(name: str):
             pass
 
 
+def set_tasks(n: int):
+    """How many background tasks are running right now (the faces draw
+    one satellite per task). Temp-file-then-rename, unlike set_state's
+    direct write: this one's read on every poll tick by a server that
+    might catch it mid-write, and a half-written int fails to parse
+    where a half-written state name would just look like a typo.
+    Never raises."""
+    try:
+        tmp = f"{_TASKS_FILE}.tmp{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.write(str(n))
+        os.replace(tmp, _TASKS_FILE)
+    except OSError:
+        pass
+
+
 def feed_waveform(pcm: np.ndarray):
-    """Feed one PCM block (int16) — throttled, downsampled to 64 points.
+    """Feed one PCM block (int16), throttled, downsampled to 64 points.
 
     Also re-asserts state="speaking" on the same throttle: this only runs
     while the mouth is audibly playing, so the bus self-heals within
@@ -148,7 +165,7 @@ _rate_limits: dict = {}
 
 
 def set_rate_limit(window: str, utilization, resets_at):
-    """One usage window's reading — how much of the plan is spent.
+    """One usage window's reading, how much of the plan is spent.
 
     Merged rather than replaced, because the reading arrives one window
     at a time and a face wants to draw both at once. `utilization` is a
@@ -188,7 +205,7 @@ def _player_cmd(path: str) -> list[str] | None:
 
 
 def static_start():
-    """Optional thinking sound — plays while the brain works."""
+    """Optional thinking sound, plays while the brain works."""
     global _static_proc
     if not _THINKING_SOUND or not os.path.exists(_THINKING_SOUND):
         return
