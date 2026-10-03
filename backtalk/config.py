@@ -15,10 +15,10 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Configuration — backtalk.json in the repo root, merged over defaults.
+"""Configuration, backtalk.json in the repo root, merged over defaults.
 
 backtalk deliberately owns NO personality. Your agent's identity lives in
-the CLAUDE.md of whatever folder `agent_dir` points at — backtalk just
+the CLAUDE.md of whatever folder `agent_dir` points at, backtalk just
 gives that agent a mouth and ears. The only voice-related instruction it
 adds is the spoken-delivery discipline below, which is about the MEDIUM
 (writing for the ear), never the character.
@@ -37,12 +37,12 @@ CONFIG_PATH = Path(os.environ.get("BACKTALK_CONFIG") or (REPO / "backtalk.json")
 DEFAULTS = {
     # The folder whose CLAUDE.md defines WHO your agent is. The voice
     # session runs there, so it's the same assistant as your terminal
-    # sessions — same name, same personality, same memory.
+    # sessions, same name, same personality, same memory.
     "agent_dir": "~",
     # Display name, used in logs and to build the quit phrases
     # ("goodbye <name>" hangs up). Match your agent's actual name.
     "name": "Assistant",
-    # The brain. Full model id ON PURPOSE — never a bare alias like
+    # The brain. Full model id ON PURPOSE, never a bare alias like
     # "sonnet": the SDK resolves aliases through its own bundled CLI and
     # can silently land on an older model. The fast tier is most of the
     # speed difference people ask about; a deep-work model makes every
@@ -125,14 +125,14 @@ DEFAULTS = {
     # default; "low" / "medium" / "high" / "max" applies at launch.
     # Saying "set effort to X" in a voice session saves itself here.
     "effort": "",
-    # The voice (Kokoro, local, free). bm_lewis is the proven default —
+    # The voice (Kokoro, local, free). bm_lewis is the proven default,
     # British male, the butler register. Others: bm_george, bm_daniel,
     # bm_fable, am_michael, af_heart... The first letter picks the
     # language pipeline (a=American, b=British, e/f/h/i/j/p/z = other
     # languages), so keep voice and accent matched.
     "voice": "bm_lewis",
     # Speech recognition (faster-whisper, local, free).
-    # Models: tiny.en / base.en / small.en / medium.en — small.en is the
+    # Models: tiny.en / base.en / small.en / medium.en, small.en is the
     # accuracy/speed sweet spot on a normal machine.
     "stt_model": "small.en",
     # "auto" uses CUDA when present, otherwise CPU. int8 keeps CPU fast.
@@ -158,7 +158,7 @@ DEFAULTS = {
     # Optional premium voice: ElevenLabs on YOUR key. The key NEVER
     # goes in a file: it's read from the macOS Keychain (item
     # `backtalk-elevenlabs`) or Linux secret-tool, with the
-    # ELEVENLABS_API_KEY env var as last-resort fallback — see
+    # ELEVENLABS_API_KEY env var as last-resort fallback, see
     # mouth._get_elevenlabs_key for the seeding one-liners. Kokoro
     # remains the automatic fallback, so the voice degrades instead of
     # going mute if the cloud fails. Needs ffmpeg on the PATH.
@@ -184,11 +184,27 @@ DEFAULTS = {
                    "release=120:makeup=4dB,alimiter=limit=0.95"),
     },
     # Where the signal-bus files are written (.voice_state,
-    # .voice_waveform, .voice_loading_pid) — anything can watch them;
+    # .voice_waveform, .voice_loading_pid), anything can watch them;
     # visualizers pair with this contract. Default: the repo root.
     "signals_dir": "",
+    # THE BROWSER BRIDGE: a second push-to-talk, a click or tap on the
+    # Jarvis face in ai-visualizer instead of (or alongside) the key.
+    # OFF by default. Localhost only for now, host/port are
+    # configurable so pointing this at a Tailscale IP later is a
+    # one-line config change, not a code change, but exposing it
+    # beyond this machine is not yet a supported, tested path.
+    "web": {
+        "enabled": False,
+        "host": "127.0.0.1",
+        "port": 8792,
+        # When a turn was triggered from the browser, also play the
+        # reply through the local speakers (not just back to the
+        # browser tab). True is the friendlier default: you might be
+        # standing right at the machine when you also tap the face.
+        "local_playback_on_remote_turn": True,
+    },
     # THE BAREHANDS SEAM: point this at a barehands checkout's state/
-    # folder and its on-screen ring becomes your agent's face — it
+    # folder and its on-screen ring becomes your agent's face, it
     # breathes while idle, spins while thinking, pulses with the voice.
     # (github.com/jaredrhod/barehands)
     "barehands_state_dir": "",
@@ -209,23 +225,23 @@ DEFAULTS = {
     "discipline_append": "",
 }
 
-# The spoken-delivery discipline — the MEDIUM half of what used to be a
+# The spoken-delivery discipline, the MEDIUM half of what used to be a
 # persona. The CHARACTER half deliberately is not here: it's whatever
 # lives in the agent_dir's CLAUDE.md. One identity, one place.
 DISCIPLINE = (
     "VOICE SESSION (your reply is spoken aloud through a TTS engine, "
     "not displayed): you are SPEAKING, in your own voice and "
-    "personality — your CLAUDE.md is who you are. The TTS engine "
+    "personality, your CLAUDE.md is who you are. The TTS engine "
     "PERFORMS your punctuation, so write like a performance, never "
     "like a memo: contractions always, punchy conversational "
     "sentences, and if a line could open a quarterly report, rewrite "
     "it like you're telling a friend. Keep replies to a few short "
     "sentences; go longer only when the question genuinely needs it. "
     "No markdown, no lists, no code blocks, no emoji, no URLs. Say "
-    "numbers the way a human says them out loud — never raw figures "
+    "numbers the way a human says them out loud, never raw figures "
     "or symbols. NEVER SPEAK A FILE PATH: say the file, not its "
     "address. 'the config' or 'ears dot py', never a string of "
-    "slashes and folder names read one by one — it is unbearable "
+    "slashes and folder names read one by one, it is unbearable "
     "aloud and carries no meaning by ear. Same for URLs and long "
     "ids: name the thing, not the address. "
     "Skip any startup sequence; answer directly. "
@@ -259,7 +275,7 @@ def load() -> dict:
     except FileNotFoundError:
         pass
     except ValueError as e:
-        print(f"[config] backtalk.json is not valid JSON ({e}) — "
+        print(f"[config] backtalk.json is not valid JSON ({e}), "
               f"using defaults", flush=True)
     cfg["agent_dir"] = _expand(cfg["agent_dir"])
     cfg["extra_dirs"] = [_expand(d) for d in cfg.get("extra_dirs", [])]

@@ -15,13 +15,13 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The mouth — streaming sentence-chunked TTS, played through one
+"""The mouth, streaming sentence-chunked TTS, played through one
 long-lived output stream.
 
 Default engine: Kokoro, in-process. Local, free, no server, no API key,
 ~0.2s to first audio once warm. Optional premium engine: ElevenLabs on
-YOUR key — read from the system keychain, never from a file (see
-_get_elevenlabs_key) — with Kokoro as the automatic fallback: the voice
+YOUR key, read from the system keychain, never from a file (see
+_get_elevenlabs_key), with Kokoro as the automatic fallback: the voice
 degrades instead of going mute if the cloud fails.
 
 Sentences are synthesized one at a time and queued for playback, so the
@@ -29,13 +29,13 @@ first sentence is audible while later ones are still rendering. Playback
 is cancellable mid-word: set the stop event and the speaker goes silent
 within one audio block plus the device buffer (~0.15s).
 
-HARD-WON AUDIO LAW #1 — ONE long-lived OutputStream, reused for every
+HARD-WON AUDIO LAW #1, ONE long-lived OutputStream, reused for every
 sentence for the life of the process. A fresh stream per sentence gives
 an audible onset blip or a beat of dead air on plenty of audio setups
 (USB interfaces, Bluetooth, streaming mixers that latch onto each new
 stream late). Proven by A/B test; do not "simplify" this away.
 
-HARD-WON AUDIO LAW #2 — buffer ~0.75s of synthesized audio before a
+HARD-WON AUDIO LAW #2, buffer ~0.75s of synthesized audio before a
 sentence starts playing, so a slower machine never underruns into
 slow-motion garble.
 """
@@ -63,7 +63,7 @@ _pipe_lock = threading.Lock()
 
 def _ensure_espeak():
     """kokoro phonemizes through system espeak-ng (its bundled loader
-    ships a broken build path — found the hard way; upstream's own docs
+    ships a broken build path, found the hard way; upstream's own docs
     say install the system package). Help phonemizer find it in the
     usual homes when the env isn't already set."""
     if os.environ.get("PHONEMIZER_ESPEAK_LIBRARY"):
@@ -201,7 +201,7 @@ def _stream_elevenlabs(text: str, timeout: float):
     - fetch mp3_44100_128 and decode locally (raw 44.1k PCM needs their
       Pro tier; the mp3 decode hides inside network wait anyway)
     - turbo model, stability 0.5, similarity 0.75
-    - never the multilingual model for English, never style above 0 —
+    - never the multilingual model for English, never style above 0,
       both make delivery slow and dull
     - their site previews are MASTERED demo clips; raw API output never
       matches them, so master locally (the ffmpeg chain in config)
@@ -271,16 +271,16 @@ def _key_slot() -> str:
 
 
 def _get_elevenlabs_key() -> str:
-    """The API key, from the most secure store available — NEVER from a
+    """The API key, from the most secure store available, NEVER from a
     file in this repo. Lookup order:
       1. macOS Keychain, item `backtalk-elevenlabs` by default (change it
-         with elevenlabs.key_slot) — seed it once with:
+         with elevenlabs.key_slot), seed it once with:
          security add-generic-password -a "$USER" -s backtalk-elevenlabs -T /usr/bin/security -w
          (it prompts for the secret; -T lets this code read it without a
          GUI prompt every launch)
       2. Linux secret-tool (libsecret):
          secret-tool store --label backtalk service backtalk-elevenlabs
-      3. the ELEVENLABS_API_KEY environment variable — the last-resort
+      3. the ELEVENLABS_API_KEY environment variable, the last-resort
          fallback, and the only option on Windows for now. Know the
          tradeoff: an export line in a shell profile is a plaintext key
          on disk, which is exactly what the keychain path avoids."""
@@ -318,7 +318,7 @@ def _elevenlabs_ready() -> bool:
 
 def synth_stream(text: str, timeout: float = 30.0):
     """One sentence -> yields (sample_rate, pcm_chunk) as the TTS
-    renders. ElevenLabs when configured, Kokoro otherwise — and Kokoro
+    renders. ElevenLabs when configured, Kokoro otherwise, and Kokoro
     as the fallback on ANY ElevenLabs failure. Degrade, never mute."""
     if _elevenlabs_ready():
         try:
@@ -326,7 +326,7 @@ def synth_stream(text: str, timeout: float = 30.0):
                 yield EL_RATE, pcm
             return
         except Exception as e:
-            log(f"[mouth] elevenlabs failed ({str(e)[:60]}) — "
+            log(f"[mouth] elevenlabs failed ({str(e)[:60]}), "
                 f"falling back to {CFG['voice']}")
     for pcm in _stream_kokoro(text):
         yield KOKORO_RATE, pcm
@@ -339,7 +339,7 @@ class Mouth:
         self._stop = threading.Event()
         self._speaking = threading.Event()
         # The one persistent output stream (audio law #1).
-        # Worker-thread-only — never touch from other threads.
+        # Worker-thread-only, never touch from other threads.
         self._out: sd.OutputStream | None = None
         self._out_rate: int | None = None
         self.ducker = Ducker()  # public: PTT ducks for the USER's voice too
@@ -353,19 +353,25 @@ class Mouth:
     def say(self, text: str):
         """Queue text (split to sentences) for speech."""
         for s in split_sentences(text):
-            self._q.put((s, None))
+            self._q.put((s, None, None))
 
-    def say_chunk(self, text: str, directions=None):
-        """Queue text as ONE TTS request, no sentence splitting — fuller
+    def say_chunk(self, text: str, directions=None, remote_sink=None):
+        """Queue text as ONE TTS request, no sentence splitting, fuller
         chunks get livelier prosody (single short sentences come out
         dull).
 
         `directions` are the stage directions this chunk carried. They are
         published on the signal bus when this chunk's audio STARTS, which
-        is why they travel with it instead of firing at parse time."""
+        is why they travel with it instead of firing at parse time.
+
+        `remote_sink`, when the turn came from the browser bridge, is a
+        (rate, pcm) -> None callable that also receives this chunk's
+        audio, queued per-item (not a global flag) so it can never leak
+        onto an unrelated later turn if an interrupt and a fresh turn
+        overlap."""
         text = text.strip()
         if text:
-            self._q.put((text, directions or None))
+            self._q.put((text, directions or None, remote_sink))
 
     def shut_up(self):
         """Barge-in: stop current playback and flush everything queued."""
@@ -395,7 +401,13 @@ class Mouth:
         from backtalk import signals
         while True:
             item = self._q.get()
-            sentence, directions = item if isinstance(item, tuple) else (item, None)
+            if isinstance(item, tuple) and len(item) == 3:
+                sentence, directions, remote_sink = item
+            elif isinstance(item, tuple):
+                sentence, directions = item
+                remote_sink = None
+            else:
+                sentence, directions, remote_sink = item, None, None
             if not sentence:
                 continue
             self._stop.clear()
@@ -404,12 +416,14 @@ class Mouth:
             signals.static_stop()     # thinking sound dies when speech starts
             signals.set_state("speaking")
             try:
-                self._play_stream(sentence, directions)
+                self._play_stream(sentence, directions, remote_sink=remote_sink)
             except Exception as e:
                 log(f"[mouth] synth/play error: {e}")
             finally:
                 if self._q.empty():
                     self._speaking.clear()
+                    if remote_sink is not None:
+                        remote_sink.reply_done()
                     # The reply has genuinely stopped talking, as opposed to
                     # the gap between two sentences of the same reply.
                     signals.reply_done()
@@ -442,9 +456,9 @@ class Mouth:
 
     def _cut(self):
         """Barge-in cut: stop feeding audio and pad the line with a beat
-        of silence — the stream itself NEVER stops (an abort+restart here
+        of silence, the stream itself NEVER stops (an abort+restart here
         re-triggers the onset blip on latch-happy audio setups). Cost:
-        the device buffer (~0.1s) plays out after the kill order — half a
+        the device buffer (~0.1s) plays out after the kill order, half a
         syllable of tail."""
         try:
             zeros = np.zeros(2205, dtype=np.int16)
@@ -454,7 +468,7 @@ class Mouth:
             self._drop_out()
 
     def _drop_out(self):
-        """Close and forget the stream — the next sentence reopens
+        """Close and forget the stream, the next sentence reopens
         fresh. The self-heal path for device errors (interface
         unplugged, audio mixer restarted)."""
         if self._out is not None:
@@ -466,11 +480,18 @@ class Mouth:
         self._out_rate = None
 
     def _play_stream(self, sentence: str, directions=None, block: int = 2205,
-                     prebuffer_s: float = 0.75):
+                     prebuffer_s: float = 0.75, remote_sink=None):
         """Stream-synthesize and play with the head-start buffer (audio
         law #2). stop() reacts ~50ms. The sample rate comes from
-        whichever engine actually answered."""
+        whichever engine actually answered.
+
+        `remote_sink`, when set, also gets every chunk (see
+        say_chunk). Its own send failures are its problem, never
+        ours, a dead browser socket must never take down the local
+        output stream below."""
         from backtalk import signals
+        local_on = bool(CFG.get("web", {}).get(
+            "local_playback_on_remote_turn", True)) or remote_sink is None
         gen = synth_stream(sentence)
         head: list = []
         banked = 0
@@ -484,7 +505,7 @@ class Mouth:
         if rate is None:
             return
         try:
-            out = self._get_out(rate)
+            out = self._get_out(rate) if local_on else None
             # AUDIO STARTS HERE: the head buffer is full and the first write
             # is next. Publishing now is what puts a screen cue on the spoken
             # word rather than seconds ahead of it.
@@ -496,13 +517,17 @@ class Mouth:
                 for i in range(0, len(pcm), block):
                     if self._stop.is_set():
                         return False
-                    out.write(pcm[i:i + block])
+                    block_pcm = pcm[i:i + block]
+                    if out is not None:
+                        out.write(block_pcm)
                     # Re-check after the blocking write: a barge-in
                     # landing mid-block must not let feed_waveform
                     # re-assert "speaking" over a fresh "listening".
                     if self._stop.is_set():
                         return False
-                    signals.feed_waveform(pcm[i:i + block])
+                    signals.feed_waveform(block_pcm)
+                    if remote_sink is not None:
+                        remote_sink(rate, block_pcm)
                 return True
             for pcm in head:
                 if not _write(pcm):
