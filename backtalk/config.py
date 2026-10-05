@@ -170,15 +170,16 @@ DEFAULTS = {
     # 1.8 s and finished ~1 s after you stop).
     "moonshine_refresh": 1.0,
     # How hard stt_hotwords pull (streaming models only). Measured with
-    # "Jarvis Hexbox": 5 fixed the name with no false hits, 10 turned
-    # "hex nuts" into it, 20 produced nothing but the hotwords.
+    # a house name: 5 fixed it with no false hits, 10 also rewrote an
+    # ordinary phrase that sounded like it, 20 produced nothing but the
+    # hotwords.
     "moonshine_keyterm_boost": 5,
     # Debugging: a folder to save every utterance's audio to (one wav
     # each, named by time), so a mishearing can be replayed. "" = off.
     "stt_save_dir": "",
     # Fixes for words the speech engine reliably gets wrong: [regex,
     # replacement] pairs, case-insensitive, applied to every transcript.
-    # e.g. [["\\bhex[- ]?(box|bocks)\\b", "Hexbox"]]
+    # e.g. [["\\bhex[- ]?(box|bucks)\\b", "Hexbox"]]
     "stt_corrections": [],
     # The microphone to record from, matched by NAME. "" means whatever
     # the OS calls the default input, which is right on most machines.
