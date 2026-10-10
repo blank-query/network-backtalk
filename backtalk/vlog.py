@@ -15,7 +15,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Session log — terminal print + timestamped append to logs/backtalk.log.
+"""Session log, terminal print + timestamped append to logs/backtalk.log.
 
 Exists because the hardest voice bug ever hit here (the off-by-one
 interrupt desync) had to be diagnosed from source, because the session
@@ -24,10 +24,14 @@ only printed to a terminal window nobody saved. Every load-bearing line
 through log() so the next gremlin comes with receipts.
 """
 import datetime
+import os
 import sys
 from pathlib import Path
 
-LOG_PATH = Path(__file__).resolve().parent.parent / "logs" / "backtalk.log"
+# A second instance (BACKTALK_CONFIG) sets BACKTALK_LOG so its lines don't
+# interleave with the first one's.
+LOG_PATH = Path(os.environ.get("BACKTALK_LOG")
+                or Path(__file__).resolve().parent.parent / "logs" / "backtalk.log")
 
 
 def _init_console():
