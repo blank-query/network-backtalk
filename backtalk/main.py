@@ -1316,7 +1316,22 @@ async def amain():
             terminal entry gets a button that reopens the file as it is
             then (the face sends "reopen", which lands here, button off).
             A picture (png, jpg, webp, gif) goes as an image card, shrunk
-            server-side (web.image_card); never to the desk unit or watch."""
+            server-side (web.image_card); never to the desk unit or watch.
+            <<show {"path": ..., "to": "<device name>"}>> shows it on that
+            device instead (a peer's or a background turn's has no asker)."""
+            if arg.startswith("{"):
+                try:
+                    a = json.loads(arg)
+                    arg = str(a.get("path") or "")
+                    if a.get("to"):
+                        conn = bridge.find(str(a["to"]))
+                        if conn is None:
+                            raise LookupError(f"{a['to']} isn't connected")
+                        asker = bridge.make_sink(conn)
+                except Exception as e:
+                    log(f"[show] not shown: {e!r}")
+                    loop.call_soon_threadsafe(brain_for(asker).ask, f"[Not shown: {e!r}]", asker)
+                    return
             send = getattr(asker, "send", None)
             if send is None:
                 return
