@@ -24,6 +24,7 @@ class Moon:
     def create_stream(self, update_interval): return Stream()
 
 
+ears.CFG["stt_engine"] = "moonshine"   # whatever backtalk.json says
 ears._moon = Moon()
 chunk = np.ones(1600, np.int16)
 
