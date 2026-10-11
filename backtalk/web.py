@@ -92,7 +92,11 @@ Wire protocol, deliberately tiny:
                                              as speech, not typing
   text frame  {"type": "line", "who":       server -> client: the
                "you"|"jarvis", "text": ...}  conversation as text, this
-                                             device's turns only;
+                                             device's turns only (a
+                                             remote device's also go
+                                             to this machine's face:
+                                             a loopback hello with no
+                                             "model");
                                              {"type": "lines", "lines":
                                              [...]} replays the last 60
                                              on hello. A line with
@@ -271,6 +275,8 @@ class Conn:
         self.rid = None       # ...under this relay id
         self.peer_link = None # the name this peer's outbound link serves (a hello's "link")
         self.authed = True    # False: refused unless the first frame is a peer hello
+        self.loopback = False # connected from this machine
+        self.face = False     # this machine's own face (a loopback hello with no "model")
         self.disconnected = False
         self.recording = False   # this tab's own slot, not bridge-wide
         self.latched = False     # this press is a tap: it ends on silence (latch)
@@ -372,6 +378,7 @@ class Conn:
                         continue
                 if kind == "hello":
                     self.id = data.get("device_id") or self.id
+                    self.face = self.loopback and not self.peer and not data.get("model")
                     self.bridge.saw(self, self.peer or data.get("model"), data.get("caps"))
                     role = self.bridge.devices().get(self.id, {}).get("role")
                     if role and not self.peer:
@@ -742,6 +749,7 @@ class BrowserBridge:
             local = addr.is_loopback or bool(getattr(addr, "ipv4_mapped", None)
                                              and addr.ipv4_mapped.is_loopback)
             conn.authed = local or not self._cfg.get("require_token")
+            conn.loopback = local
             self._conns.add(conn)
             try:
                 await conn.reader()   # runs until this connection closes
@@ -1081,13 +1089,14 @@ class BrowserBridge:
             return None
         return np.concatenate(frames)
 
-    def make_sink(self, conn: Conn, low: bool = False):
+    def make_sink(self, conn: Conn, low: bool = False, mirror: bool = True):
         """Returns a (rate, pcm) -> None closure for mouth.py's _write
         to call per audio block. `low`: an announcement's audio, which
         yields to everything else; any other audio marks the device as
         busy talking (voice_until) so announcements wait for a lull. Must never let a dead browser socket
         affect local playback — every failure is swallowed here, not
-        left for the caller to handle."""
+        left for the caller to handle. `mirror`: its "line" frames also
+        go to this machine's face (see _send)."""
         loop = self._loop
 
         def live():
@@ -1119,6 +1128,12 @@ class BrowserBridge:
         def _send(obj: dict):
             if obj.get("type") == "line" and conn.id:
                 self._lines.setdefault(conn.id, collections.deque(maxlen=60)).append(obj)
+                # a remote device's turn also shows, silently, in this
+                # machine's face terminal (text only: audio and the
+                # active device stay with the asker)
+                if mirror and not (conn.face or conn.peer):
+                    for f in [f for f in list(self._conns) if f.face and f.id != conn.id]:
+                        self.make_sink(f).send(obj)
             c = live()
             if c is None or loop is None:
                 return
@@ -1176,7 +1191,7 @@ class BrowserBridge:
 
         def _send(obj: dict):
             for conn in conns():
-                self.make_sink(conn).send(obj)
+                self.make_sink(conn, mirror=False).send(obj)
 
         _sink.reply_done = _reply_done
         _sink.stop = _stop
