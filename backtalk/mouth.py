@@ -58,6 +58,16 @@ from backtalk.vlog import log
 KOKORO_RATE = 24000
 EL_RATE = 44100
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+# Never spoken: a markdown picture, ![alt](path or data URL), which the face
+# terminal draws as a thumbnail; any <<tag>>; a data: URL; and any long
+# unbroken base64-looking run (40+ characters).
+_UNSPEAKABLE = re.compile(r"!\[[^\]]*\]\([^)]*\)?|<<[^<>]*>>|data:[\w.+-]+/[\w.+-]+;base64,\S*"
+                          r"|[A-Za-z0-9+/=]{40,}")
+
+
+def speakable(text: str) -> str:
+    """The text with everything that must never reach the voice removed."""
+    return " ".join(_UNSPEAKABLE.sub(" ", text).split())
 
 _pipe = None
 _pipe_lock = threading.Lock()
@@ -415,7 +425,7 @@ def _phone_frames(directions):
 def synth_stream(text: str, timeout: float = 30.0):
     """_synth_raw with the configured gain_db applied to each chunk."""
     g = 10 ** (float(CFG.get("gain_db") or 0) / 20)
-    for rate, pcm in _synth_raw(text, timeout):
+    for rate, pcm in _synth_raw(speakable(text), timeout):
         if g != 1:
             pcm = np.clip(pcm * g, -32768, 32767).astype(np.int16)
         yield rate, pcm
@@ -477,7 +487,7 @@ class Mouth:
 
     def say(self, text: str, remote_sink=None):
         """Queue text (split to sentences) for speech."""
-        for s in split_sentences(text):
+        for s in split_sentences(speakable(text)):
             self._q.put((s, None, remote_sink))
 
     def say_chunk(self, text: str, directions=None, remote_sink=None):
@@ -494,7 +504,7 @@ class Mouth:
         audio, queued per-item (not a global flag) so it can never leak
         onto an unrelated later turn if an interrupt and a fresh turn
         overlap."""
-        text = text.strip()
+        text = speakable(text)      # an image-only line still carries its directions
         if text or directions:      # directions alone: see _run
             self._q.put((text, directions or None, remote_sink))
 
