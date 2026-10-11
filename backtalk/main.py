@@ -78,7 +78,7 @@ from backtalk.ears import (Ears, Session, babble, explain_audio_failure,
 from backtalk.mouth import DIRECTION_HOOKS, Mouth, synth_stream, warm as warm_mouth
 from backtalk.ptt import PTTListener
 from backtalk.vlog import log
-from backtalk.web import BrowserBridge, ListenStream, beep, chime
+from backtalk.web import BrowserBridge, ListenStream, beep, chime, image_card, IMAGE_TYPES, NO_IMAGE_MODELS
 
 NAME = CFG["name"]
 # When the last spoken (not typed) question came in, any device; see handle().
@@ -1314,7 +1314,9 @@ async def amain():
             card on the asking device (a recipe, a list); <<show close>>
             closes it. Only files inside the agent's folders. The reply's
             terminal entry gets a button that reopens the file as it is
-            then (the face sends "reopen", which lands here, button off)."""
+            then (the face sends "reopen", which lands here, button off).
+            A picture (png, jpg, webp, gif) goes as an image card, shrunk
+            server-side (web.image_card); never to the desk unit or watch."""
             send = getattr(asker, "send", None)
             if send is None:
                 return
@@ -1326,8 +1328,14 @@ async def amain():
                 path = os.path.realpath(arg if os.path.isabs(arg) else os.path.join(CFG["agent_dir"], arg))
                 if not any(path == r or path.startswith(r + os.sep) for r in roots):
                     raise PermissionError("outside the agent's folders")
-                with open(path, encoding="utf-8") as f:
-                    text = f.read(200_000)
+                if os.path.splitext(path)[1].lower() in IMAGE_TYPES:
+                    model = bridge.devices().get(getattr(asker, "conn_id", None), {}).get("model")
+                    if model in NO_IMAGE_MODELS:
+                        raise ValueError(f"the {model} has no screen for pictures")
+                    text = image_card(path)
+                else:
+                    with open(path, encoding="utf-8") as f:
+                        text = f.read(200_000)
                 if text.startswith("---"):           # drop the note's frontmatter
                     end = text.find("\n---", 3)
                     text = text[end + 4:].lstrip() if end > 0 else text
@@ -1691,6 +1699,8 @@ async def amain():
             bridge.on_listen = _hf_listen
             bridge.on_image = _on_image
             bridge.on_file = _on_file
+            bridge.on_drop = lambda conn: log(f"[web] attachments discarded on {bridge.name_of(conn.id)}: "
+                                              f"{images.pop(conn.id, None)} {files.pop(conn.id, None)}")
             bridge.on_phone_result = _on_phone_result
             bridge.on_heard = _heard
             bridge.on_reopen = lambda conn, path: _show(path, bridge.make_sink(conn), button=False)
