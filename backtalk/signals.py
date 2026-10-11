@@ -322,8 +322,10 @@ def static_start():
     if not cmd:
         return
     try:
+        # SDL_APP_NAME: the mixer shows "jarvis-thinking", not "ffplay"
+        env = dict(os.environ, SDL_APP_NAME=f"{str(CFG.get('name') or 'assistant').lower()}-thinking")
         _static_proc = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
         with open(_LOADING_PID_FILE, "w") as f:
             f.write(str(_static_proc.pid))
     except OSError:
