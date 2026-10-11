@@ -347,8 +347,8 @@ def make_permission_gate(mouth, brain):
                 interrupt=False)
         approved = _norm_speech(answer) in _YES
         # the model keeps working either way: restore the working state
+        signals.static_start()     # before "thinking": the face stays quiet while it plays
         signals.set_state("thinking")
-        signals.static_start()
         if approved:
             log("[perm]   approved by voice")
             return PermissionResultAllow(behavior="allow")
@@ -1083,9 +1083,9 @@ async def amain():
                     f"with the Read tool: {', '.join(shared)}] {text}")
             remote_sink.send({"type": "image_used"})
         b = brain_for(remote_sink)     # its own face channel if a session owns the device
-        b.bus.set_state("thinking")
         if not typed:          # typing usually means keep it quiet
-            b.bus.static_start()
+            b.bus.static_start()   # before "thinking", or the face plays its own copy
+        b.bus.set_state("thinking")
         _deny_pending()
         b.ask(text, remote_sink=remote_sink, spoken=not typed)
         return True
