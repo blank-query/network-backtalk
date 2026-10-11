@@ -316,6 +316,35 @@ class WarmBrain:
         return [{"text": str(self._task_desc.get(t) or "background task")[:200]}
                 for t in sorted(self._active_tasks)]
 
+    def running(self) -> list:
+        """The background tasks an abort can stop, [(task id, what it's doing)]."""
+        return [(t, str(self._task_desc.get(t) or "a background task"))
+                for t in sorted(self._active_tasks)]
+
+    async def stop_task(self, task_id: str) -> bool:
+        """Stop one background task (the abort's confirmed pick). Its end
+        comes back on the stream as a terminal status, like any other."""
+        try:
+            await asyncio.wait_for(self._client.stop_task(task_id), 10)
+            log(f"[brain] stopped task {task_id}: {self._task_desc.get(task_id)!r}")
+            return True
+        except Exception as e:
+            log(f"[brain] stop_task {task_id} failed: {e!r}")
+            return False
+
+    async def abort_turn(self):
+        """The abort's "everything": the live turn really stops (the SDK
+        interrupt), not just its speech. Its rest is dropped until its
+        ResultMessage, as for any cut."""
+        if not self._client or not self._turn_active or self._capture is not None:
+            return
+        self._discard_until_result = True
+        try:
+            await asyncio.wait_for(self._client.interrupt(), 10)
+            log("[brain] turn aborted (SDK interrupt)")
+        except Exception as e:
+            log(f"[brain] abort interrupt failed: {e!r}")
+
     def _start_reader(self):
         self._reader_task = asyncio.ensure_future(self._read_forever())
 

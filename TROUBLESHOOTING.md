@@ -53,7 +53,7 @@ That sound is the safety net working: on any ElevenLabs failure, backtalk falls 
 
 ## Hands-free listening: the tradeoff
 
-Hands-free listening (the setup question, `"mic_mode": "open"`, the spoken "go hands free", or the `--open-mic` launch flag) listens continuously with voice-activity detection instead of hold-to-talk. Know what you're trading: any speech in the room (a video, music with vocals, another voice assistant) can be transcribed and answered as if it were you. Push to talk is the default because the button is a perfect voice-activity detector and the mic is *closed* the rest of the time. Two things stay true in hands-free: the talk key still works (it interrupts, and holding it always gets you heard over room noise), and spoken permission checks accept only an exact "yes", so stray room audio cannot approve an action. With open speakers, answer permission checks with the button held, or wear headphones. `--barge-in` (interrupting it by talking over it) additionally requires headphones, or it hears its own reply and interrupts itself.
+Hands-free listening (the setup question, `"mic_mode": "open"`, the spoken "go hands free", or the `--open-mic` launch flag) listens continuously with voice-activity detection instead of hold-to-talk. Know what you're trading: any speech in the room (a video, music with vocals, another voice assistant) can be transcribed and answered as if it were you. Push to talk is the default because the button is a perfect voice-activity detector and the mic is *closed* the rest of the time. Two things stay true in hands-free: the talk key still works (it pauses the reply, and holding it always gets you heard over room noise), and spoken permission checks accept only an exact "yes", so stray room audio cannot approve an action. With open speakers, answer permission checks with the button held, or wear headphones. `--barge-in` (interrupting it by talking over it) additionally requires headphones, or it hears its own reply and interrupts itself.
 
 ## For AI assistants: the architecture in six lines
 
@@ -87,8 +87,8 @@ Three land mines with warning signs on them; do not "simplify" these away:
 
 1. `./run.sh` → greeting speaks.
 2. Hold the key, ask something, release → answer within ~2s.
-3. Interrupt mid-reply with the key → it stops within a syllable.
-4. Interrupt, then ask something NEW → the answer matches the NEW question (repeat 3×: that's the stream drain proving itself).
+3. Press the key mid-reply → it pauses within a syllable, and resumes where it paused when you let go; your words are answered next.
+4. Say "Jarvis, stop" mid-reply, then ask something NEW → the answer matches the NEW question (repeat 3×: that's the stream drain proving itself).
 5. Ask something that needs a tool ("what's in my notes about X") → it speaks filler within a couple of seconds, then the answer.
 6. Type a message in the terminal → spoken reply, same conversation.
 7. Say "usage report" → it speaks turns and tokens (plus cost when the API reports one).

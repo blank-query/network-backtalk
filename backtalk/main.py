@@ -31,7 +31,9 @@ session" / "compact the session" / "switch to the deep model" / "back
 to the fast model" / "set effort to low" (or medium, high, max) /
 "usage report" / "go hands free" and "push to talk mode" (the MIC) /
 "stop listening" (hands-free pauses until the next talk-key press) /
-"stop asking for permission" and "start asking again" (permissions,
+"abort" (read back the running background tasks and stop what the
+next answer names, or "everything") / "stop asking for permission" and
+"start asking again" (permissions,
 called auto-approve, a different axis than the microphone on purpose).
 And with permission_mode "ask" (the default), gated tool calls ASK OUT
 LOUD and your spoken yes or no decides them; any other answer is
@@ -44,8 +46,8 @@ Flags:
                "push to talk mode"). Know the tradeoff: room audio (a
                video, music, another voice assistant) can trigger
                replies to speech never meant for the agent. The talk
-               key keeps working: it interrupts, and holding it always
-               gets you heard.
+               key keeps working: it pauses the reply, and holding it
+               always gets you heard.
   --barge-in   with --open-mic: keep listening WHILE speaking.
                HEADPHONES REQUIRED — with open speakers the mic hears
                the reply and the agent interrupts itself.
@@ -401,6 +403,9 @@ CONSOLE_VERBS = {
     # on its own it does nothing else.
     "stop":      ("stop", "stop talking", "enough", "that s enough",
                   "shut up", "hold on", "hang on", "be quiet", "quiet"),
+    # The hold on Interrupt, spoken: stop the reply, read back what's
+    # running, and stop only what the next answer picks (see abort_pick).
+    "abort":     ("abort", "abort everything"),
 }
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -438,7 +443,43 @@ def barges_in(text, heard):
     button (sir, 2026-10-10), when it's a stop command from anyone, or
     exactly one enrolled voice is heard. Two voices (people talking to
     each other) or only unknown ones: the reply carries on."""
-    return console_match(text) == "stop" or len(heard) == 1
+    return console_match(text) in ("stop", "abort") or len(heard) == 1
+
+
+ABORT_WAIT_S = 60      # how long the abort's question waits for its answer
+_ABORT_ALL = {"everything", "all", "all of them", "everything please", "the lot", "both",
+              "all of it", "yes everything"}
+_ABORT_NONE = {"nothing", "none", "never mind", "nevermind", "cancel", "no", "nope",
+               "neither", "leave it", "leave them", "keep them", "keep it", "none of them"}
+_ORDINALS = ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
+_ORDINALS2 = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+              "ninth", "tenth")
+
+
+def abort_pick(text, descs):
+    """The answer to the abort's question: "all", "none", an index into
+    descs (a number, or the one description sharing the most words), or
+    None when it can't tell."""
+    words = "".join(c if c.isalnum() else " " for c in text.lower()).split()
+    name = NAME.lower().split()
+    if words and SequenceMatcher(None, " ".join(words[:len(name)]), " ".join(name)).ratio() >= 0.75:
+        words = words[len(name):]
+    while words and words[0] in ("stop", "kill", "abort", "end", "just", "only", "the", "number"):
+        words = words[1:]
+    t = " ".join(words)
+    if t in _ABORT_ALL or t.startswith("everything"):
+        return "all"
+    if t in _ABORT_NONE:
+        return "none"
+    for w in words:
+        n = int(w) if w.isdigit() else (_ORDINALS.index(w) + 1 if w in _ORDINALS
+                                         else _ORDINALS2.index(w) + 1 if w in _ORDINALS2 else 0)
+        if 1 <= n <= len(descs):
+            return n - 1
+    said = {w for w in words if len(w) > 2}
+    hits = [len(said & {w.lower().strip(".,:;()") for w in d.split()}) for d in descs]
+    best = max(hits, default=0)
+    return hits.index(best) if best and hits.count(best) == 1 else None
 
 
 def trailing_mic_verb(text):
@@ -892,6 +933,22 @@ async def amain():
                 log("[console] open mic muted until the next talk-key press")
                 say("Not listening. Press the talk key when you "
                     "want me back.")
+        elif verb == "abort":
+            resp = ""
+            b = brain_for(sink)
+            tasks = b.running()
+            if not tasks and not b.turn_active:
+                tell("Nothing's running.", sink)
+            else:
+                _ABORT.update(brain=b, tasks=tasks, at=time.monotonic(),
+                              conn=getattr(sink, "conn_id", None))
+                if tasks:
+                    tell("Running: " + " ".join(
+                        f"{_ORDINALS[i] if i < 10 else i + 1}, {_short(d)}." for i, (_, d) in enumerate(tasks))
+                        + " Stop everything, a number, or never mind?", sink)
+                else:
+                    tell("Nothing in the background, just my current work. "
+                         "Stop it? Everything, or never mind.", sink)
         elif verb == "noask":
             resp = ""
             _CONFIRM["verb"] = "noask"
@@ -972,6 +1029,51 @@ async def amain():
                                             or getattr(x, "id", None))
         return sessions.get(cid, brain)
 
+    _ABORT = {"brain": None, "tasks": [], "conn": None, "at": 0.0}   # the abort's open question
+
+    def _short(d: str) -> str:
+        d = " ".join(str(d).split())
+        return d if len(d) <= 70 else d[:70].rsplit(" ", 1)[0]
+
+    def tell(text, sink):
+        """Spoken, and shown in that device's terminal."""
+        mouth.say(text, remote_sink=sink)
+        if hasattr(sink, "send"):
+            sink.send({"type": "line", "who": "jarvis", "text": text})
+
+    async def _stop_reply(b, why: str):
+        """A tap on Interrupt, "<name>, stop", a barge-in: the voice stops
+        now and the rest of the reply is dropped. Never the SDK interrupt:
+        helpers and tools keep running (see brain.interrupt)."""
+        if b.turn_active:
+            log(f"[turn] cut off mid-reply by {why} (output dropped, helpers untouched)")
+            _deny_pending()      # an ask never outlives its turn
+            await b.interrupt()
+        b.mouth.shut_up()
+        if b.remote_sink is not None:
+            b.remote_sink.stop()
+
+    async def _abort_answer(text, sink):
+        """The next words after the abort's read-back pick what stops."""
+        b, tasks = _ABORT["brain"], _ABORT["tasks"]
+        _ABORT["brain"] = None
+        pick = abort_pick(text, [d for _, d in tasks])
+        if pick == "all":
+            for tid, _ in b.running():
+                await b.stop_task(tid)
+            await b.abort_turn()
+            line = "Stopped everything."
+        elif pick == "none":
+            line = "Leaving everything running."
+        elif pick is None:
+            line = "I didn't catch which, so nothing's stopped."
+        else:
+            d = _short(tasks[pick][1])
+            line = (f"Stopped {d}." if await b.stop_task(tasks[pick][0])
+                    else f"I couldn't stop {d}. It may have finished.")
+        log(f"[abort] {text!r} -> {pick}: {line}")
+        tell(line, sink)
+
     async def handle(text: str, spoke_from: float | None = None,
                      interrupt: bool = True, remote_sink=None,
                      typed: bool = False, who: str | None = None) -> bool:
@@ -1020,6 +1122,12 @@ async def amain():
                                          for q in QUIT_PHRASES):
                 mouth.say("Staying as we are.")
                 return True
+        if _ABORT["brain"] is not None \
+                and getattr(remote_sink, "conn_id", None) == _ABORT["conn"]:
+            if time.monotonic() - _ABORT["at"] < ABORT_WAIT_S:
+                await _abort_answer(text, remote_sink)
+                return True
+            _ABORT["brain"] = None
         if any(q in text.lower() for q in QUIT_PHRASES):
             await brain.interrupt()
             mouth.shut_up()
@@ -1028,7 +1136,9 @@ async def amain():
             mouth.say(CFG["signoff"])
             mouth.wait_done(timeout=15)
             return False
-        if interrupt:
+        verb = verb or console_match(text)
+        if interrupt or verb in ("stop", "abort"):
+            # A press only queues; a stop or abort said into it still stops.
             # mouth/remote_sink get stopped regardless of whether the
             # SDK turn itself is still active: with real-time pacing,
             # mouth can still be sending audio for many seconds after
@@ -1039,17 +1149,12 @@ async def amain():
             # A brain that can redirect its live turn (Hermes) keeps
             # working through a spoken barge-in, which joins the turn
             # below; only a stop command kills it.
-            if b.turn_active and not (getattr(b, "redirects", False)
-                                      and console_match(text) != "stop"):
-                # The reader (brain.py) owns speaking now; interrupt() only
-                # drops the rest of the turn, never the SDK interrupt.
-                log("[turn] cut off mid-reply by new input (output dropped, helpers untouched)")
-                _deny_pending()      # an ask never outlives its turn
-                await b.interrupt()
-            b.mouth.shut_up()
-            if b.remote_sink is not None:
-                b.remote_sink.stop()
-        verb = verb or console_match(text)
+            if getattr(b, "redirects", False) and verb not in ("stop", "abort"):
+                b.mouth.shut_up()
+                if b.remote_sink is not None:
+                    b.remote_sink.stop()
+            else:
+                await _stop_reply(b, "new input")
         if verb:
             await run_console(verb, remote_sink)
             return True
@@ -1717,6 +1822,16 @@ async def amain():
             bridge.on_drop = lambda conn: log(f"[web] attachments discarded on {bridge.name_of(conn.id)}: "
                                               f"{images.pop(conn.id, None)} {files.pop(conn.id, None)}")
             bridge.on_phone_result = _on_phone_result
+
+            async def _control(conn, kind):
+                """A tap on Interrupt stops the reply; a hold (abort) then
+                reads back what's running and asks which to stop."""
+                log(f"[web] {kind} from {bridge.name_of(conn.id) or str(conn.id)[:8]}")
+                sink = bridge.make_sink(conn)
+                await _stop_reply(brain_for(conn), f"the {kind} button")
+                if kind == "abort":
+                    await run_console("abort", sink)
+            bridge.on_control = lambda conn, kind: asyncio.ensure_future(_control(conn, kind))
             bridge.on_heard = _heard
             bridge.on_reopen = lambda conn, path: _show(path, bridge.make_sink(conn), button=False)
             bridge.on_text = lambda conn, t, spoken=False: hf_q.put_nowait(
@@ -1913,7 +2028,10 @@ async def amain():
             if press_fut in done:
                 press_fut.result(); press_fut = None
                 press_t = _MIC["active"] = time.monotonic()
-                await _begin_capture()
+                # Talk never interrupts: the reply holds where it is while
+                # the key records and carries on after; the words queue.
+                await _begin_capture(interrupt=False)
+                mouth.pause()
                 print("[ptt] recording (release, or tap again, to send)...", flush=True)
                 # A tap latches until the next press, with a beep the mic
                 # doesn't hear, capped like hands-free (hands_free_timeout_s);
@@ -1958,13 +2076,17 @@ async def amain():
                     _unmute()
                 mouth.ducker.speech_end(0.2)     # snap back fast on release
                 if not text:
+                    mouth.resume()
                     log(f"[ptt] {'tap' if text is None else 'empty transcript'}, ignored")
                     _settle_state()
                     if text == "":      # past record_held's tap floor
                         mouth.say("I didn't catch that.")
                     continue
-                if not await handle(text, spoke_from=press_t):
-                    return
+                try:      # a stop said into it lands before the reply resumes
+                    if not await handle(text, spoke_from=press_t, interrupt=False):
+                        return
+                finally:
+                    mouth.resume()
                 continue
             if ws_press_fut is not None and ws_press_fut in done:
                 conn, is_interrupt = ws_press_fut.result(); ws_press_fut = None

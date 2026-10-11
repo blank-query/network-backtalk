@@ -458,6 +458,10 @@ class Mouth:
         self._q: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._speaking = threading.Event()
+        # Cleared while the talk key records: local playback holds where it
+        # is (nothing dropped, the reply keeps queueing) and carries on.
+        self._go = threading.Event()
+        self._go.set()
         self.busy = lambda: False   # the brain's turn still running (see brain.py)
         # The one persistent output stream (audio law #1).
         # Worker-thread-only — never touch from other threads.
@@ -493,6 +497,13 @@ class Mouth:
         text = text.strip()
         if text or directions:      # directions alone: see _run
             self._q.put((text, directions or None, remote_sink))
+
+    def pause(self):
+        """Hold local playback (the talk key is down): the reply waits, whole."""
+        self._go.clear()
+
+    def resume(self):
+        self._go.set()
 
     def shut_up(self):
         """Barge-in: stop current playback and flush everything queued."""
@@ -664,6 +675,9 @@ class Mouth:
 
             def _write(pcm):
                 for i in range(0, len(pcm), block):
+                    while out is not None and not self._go.wait(0.05):
+                        if self._stop.is_set():
+                            return False
                     if self._stop.is_set():
                         return False
                     block_pcm = pcm[i:i + block]
