@@ -315,6 +315,12 @@ class HermesClient:
     async def interrupt(self):
         await self.call("session.interrupt", {"session_id": self.sid}, timeout=5)
 
+    async def stop_task(self, task_id: str):
+        """The SDK's stop_task, for a subagent (the abort's pick)."""
+        r = await self.call("subagent.interrupt", {"session_id": self.sid, "subagent_id": task_id}, timeout=5)
+        if not r.get("found"):
+            raise RuntimeError("no such running subagent")
+
     async def get_context_usage(self):
         u = await self.call("session.usage", {"session_id": self.sid}, timeout=10)
         return {"categories": [{"name": "context used", "tokens": u.get("context_used") or 0}]}

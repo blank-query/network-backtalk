@@ -22,7 +22,7 @@ processed. Or TAP it (a press shorter than TAP_S): the mic stays open
 until the next press, like the desk unit (see talking()). The button IS the voice-activity detector, which is why this
 mode is speaker-safe with no headphones: the mic simply isn't open while
 the assistant talks, unless you press the key, and pressing while it
-talks interrupts it.
+talks pauses it until you're done (your words queue for its next turn).
 
 THE KEY-REPEAT TRAP (the bug that kills every naive build): the OS fires
 on_press events CONTINUOUSLY while a key is held. Without the held-state
