@@ -495,22 +495,17 @@ class WarmBrain:
         return await self.capture(cmd, count_turn=False)
 
     async def interrupt(self):
-        """Stop whatever turn is live. A no-op when nothing is in
-        flight, there would be nothing for the reader to discard, and
-        discarding with nothing to discard-UNTIL would eat the next
-        turn's real content instead. The SDK interrupt also kills running
-        background helpers, so it is never sent without a real main turn."""
+        """Cut the live turn off: the rest of its output is dropped (never
+        spoken) and it finishes on its own; asks queued behind it go out at
+        its ResultMessage, and _release_if_stuck covers one that never ends.
+        Never the SDK interrupt: that also kills every background helper,
+        and a press or barge-in must leave them running. A no-op with
+        nothing in flight (discarding with nothing to discard-UNTIL would
+        eat the next turn) and for a capture (the reader swallows it)."""
         if self._release_if_stuck() or not self._client \
-                or not self._turn_active:
+                or not self._turn_active or self._capture is not None:
             return
-        # a capture turn needs no discard: the reader swallows it anyway,
-        # through its ResultMessage
-        if self._capture is None:
-            self._discard_until_result = True
-        try:
-            await asyncio.wait_for(self._client.interrupt(), 5)
-        except Exception:
-            pass  # the turn may already be over; the discard flag is the point
+        self._discard_until_result = True
 
     async def stop(self):
         if self._reader_task:

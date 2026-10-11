@@ -2,8 +2,8 @@
 # Self-check: a capture (warmup ping, console command) on a slow backend that
 # only thinks and never finishes is interrupted at capture_timeout_s, its
 # leftovers are never spoken, an ask made meanwhile waits for it and then gets
-# its own reply, the face shows thinking while it runs, and interrupt() reaches
-# a capture that has streamed nothing but thinking.
+# its own reply, the face shows thinking while it runs, and a barge-in
+# (interrupt()) never sends the SDK interrupt to a capture.
 import asyncio, sys
 sys.path.insert(0, __import__("os").path.join(__import__("os").path.dirname(__file__), ".."))
 from claude_agent_sdk import ResultMessage
@@ -76,13 +76,15 @@ async def main():
     await asyncio.sleep(0.3)
     assert sir.got == ["Hello sir."], sir.got
 
-    # 2. interrupt() reaches a capture that has only thought so far
+    # 2. a barge-in leaves a capture alone (no SDK interrupt, which would
+    # kill background helpers; no discard); its own timeout still ends it
     cap = asyncio.ensure_future(b.capture("/effort high", count_turn=False))
     await asyncio.sleep(0.3)
     await b.interrupt()
-    assert c.interrupts == 2, "interrupt was a no-op on a thinking capture"
+    assert c.interrupts == 1, "a barge-in called the SDK interrupt on a capture"
     assert not b._discard_until_result, "discard armed for a capture turn"
-    await asyncio.wait_for(cap, 2)
+    await asyncio.wait_for(cap, 3)
+    assert c.interrupts == 2, "timed-out capture was not interrupted"
     assert not b.turn_active
     c.busy = False
     b.ask("next", sir); c.q.put_nowait(text("Next reply. ")); c.q.put_nowait(res())

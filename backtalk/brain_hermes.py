@@ -376,8 +376,9 @@ class HermesBrain(WarmBrain):
             self._widen_turn = True
 
     async def interrupt(self):
-        """Stop means stop, not "next": queued asks go too, as Hermes's own
-        session.interrupt clears its queue."""
+        """Stop means stop, not "next": queued asks go too. The live turn
+        is cut off as WarmBrain does it, never session.interrupt (it would
+        take the turn's subagents with it)."""
         if self._ask_queue:
             log(f"[brain] stop dropped {len(self._ask_queue)} queued message(s)")
             self._ask_queue.clear()

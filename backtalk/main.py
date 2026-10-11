@@ -1038,9 +1038,9 @@ async def amain():
             # below; only a stop command kills it.
             if b.turn_active and not (getattr(b, "redirects", False)
                                       and console_match(text) != "stop"):
-                # The reader (brain.py) owns speaking now, interrupt()
-                # is a clean async call, nothing here to cancel-and-await.
-                log("[turn] interrupted mid-reply by new input")
+                # The reader (brain.py) owns speaking now; interrupt() only
+                # drops the rest of the turn, never the SDK interrupt.
+                log("[turn] cut off mid-reply by new input (output dropped, helpers untouched)")
                 _deny_pending()      # an ask never outlives its turn
                 await b.interrupt()
             b.mouth.shut_up()
@@ -1661,7 +1661,7 @@ async def amain():
                 perm_wait = (_PERM["fut"] is not None
                              and not _PERM["fut"].done())
                 if brain.turn_active and not perm_wait:
-                    log("[turn] interrupted mid-reply, new capture started")
+                    log("[turn] cut off mid-reply (output dropped, helpers untouched), new capture started")
                     await brain.interrupt()
                 # Unconditional, same reasoning as handle(): mouth can
                 # still be sending audio long after turn_active goes
