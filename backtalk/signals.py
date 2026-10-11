@@ -28,6 +28,9 @@ is the whole integration surface:
   .voice_mic_mode     ptt | open | paused (paused wins over open, open
                       over ptt, across the local mic and every tab)
   .voice_capturing    1 while an open mic is mid-utterance, else 0
+  .voice_speed        JSON {gen, read?, ts}: the last model call's tok/s
+                      (read = prompt processing, when the server says);
+                      only written when show_speed is on (default)
 
 Written to signals_dir (default: the repo root). Visualizers built on
 this contract just work.
@@ -41,6 +44,7 @@ Every write is wrapped: the bus must never crash the voice line.
 """
 import json
 import os
+import re
 import threading
 import subprocess
 import sys
@@ -61,6 +65,7 @@ _TASKS_FILE = os.path.join(_DIR, ".voice_tasks")
 _ACTIVE_CONN_FILE = os.path.join(_DIR, ".voice_active_conn")
 _MIC_MODE_FILE = os.path.join(_DIR, ".voice_mic_mode")
 _CAPTURING_FILE = os.path.join(_DIR, ".voice_capturing")
+_SPEED_FILE = os.path.join(_DIR, ".voice_speed")
 
 _BH = CFG.get("barehands_state_dir") or ""
 _BH_STATE = os.path.join(_BH, "state") if _BH else ""
@@ -299,6 +304,50 @@ def set_rate_limit(window: str, utilization, resets_at):
         pass
 
 
+def set_speed(gen: float, read: float | None = None):
+    """The last model call's generation (and prompt read) speed, tok/s,
+    for the face's corner readout. Nothing when show_speed is off.
+    Never raises."""
+    if not CFG.get("show_speed", True) or not gen:
+        return
+    try:
+        tmp = f"{_SPEED_FILE}.tmp{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.write(json.dumps({"gen": round(gen, 1), "ts": time.time()}
+                               | ({"read": round(read, 1)} if read else {})))
+        os.replace(tmp, _SPEED_FILE)
+    except OSError:
+        pass
+
+
+_SPEED_RE = re.compile(r"read in \d+ ms \(([\d.]+) tok/s\).*generated in \d+ ms \(([\d.]+) tok/s\)")
+
+
+def tail_speed_log(path: str):
+    """Thread body: follow a local model server's log (config speed_log,
+    e.g. a local server's) and publish each request's speeds from lines like
+    "... read in X ms (R tok/s), M generated in Y ms (G tok/s)".
+    Starts at the end; a truncated or replaced file is reopened."""
+    f, ino = None, None
+    while True:
+        try:
+            st = os.stat(path)
+            if f is None or st.st_ino != ino or st.st_size < f.tell():
+                first = f is None
+                if f:
+                    f.close()
+                f, ino = open(path, errors="replace"), st.st_ino
+                if first:
+                    f.seek(0, 2)   # old lines are old news
+            for line in f.readlines():
+                m = _SPEED_RE.search(line)
+                if m:
+                    set_speed(float(m.group(2)), float(m.group(1)))
+        except OSError:
+            pass
+        time.sleep(0.5)
+
+
 def _player_cmd(path: str) -> list[str] | None:
     if sys.platform == "darwin":
         return ["afplay", "-v", "0.35", path]
@@ -419,3 +468,6 @@ class DeviceBus:
 
     def set_rate_limit(self, window, utilization, resets_at):
         set_rate_limit(window, utilization, resets_at)
+
+    def set_speed(self, gen, read=None):
+        set_speed(gen, read)
