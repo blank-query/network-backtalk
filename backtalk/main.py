@@ -2116,7 +2116,9 @@ async def amain():
                 log("[web] recording (release to send)..."
                     + ("" if is_interrupt else " (queued)"))
                 g = _MIC["gen"]
-                session = Session()
+                # a phone that sent its own transcript last press will
+                # again: no streamed fallback (see ears.Session defer)
+                session = Session(defer=getattr(conn, "own_stt", False))
                 pcm, failed, held = None, False, 0.0
                 try:
                     pcm = await bridge.record_until_release(
@@ -2126,6 +2128,8 @@ async def amain():
                     held = time.monotonic() - press_t
                     # a tap nobody spoke into: dropped, phone words and all
                     phone = None if conn.tap_dropped else getattr(conn, "release_text", None)
+                    if pcm is not None:
+                        conn.own_stt = bool(phone)
                     if pcm is None or phone:
                         session.cancel()
                     if phone:

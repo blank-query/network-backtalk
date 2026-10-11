@@ -177,6 +177,11 @@ def warm():
             # earlier runs could not clean up on their way out.
             _sweep_orphan_espeak_tempdirs()
             from kokoro import KPipeline
+            import torch
+            # torch's default pool is every physical core, spinning: twice
+            # the CPU for a third less time on a loaded desktop (measured
+            # 2026-10-11: 12.4 vs 6.5 CPU-s for a 6 s sentence, 1.15 vs 1.74 s)
+            torch.set_num_threads(int(CFG.get("tts_threads") or 4))
             # The voice name's first letter IS the language pipeline:
             # a=American English, b=British English, e/f/h/i/j/p/z = the
             # other shipped languages. bm_lewis -> 'b'.
