@@ -3,7 +3,8 @@
 # face terminal. The face (a loopback hello with no "model") gets the
 # phone's "line" frames and none of its audio or other frames; a broadcast
 # reaches the face once, not twice; the face's own lines go nowhere else;
-# a phone on loopback (a relayed app says "model") is no face. Run against
+# a phone on loopback (a relayed app says "model") is no face; the desk
+# unit and the watch mirror like the phone. Run against
 # each instance's own "web" settings (Jarvis, Friday), on spare ports.
 import asyncio, json, os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -58,6 +59,18 @@ async def check(cfg_file, port):
 
         br.make_sink(by["face"]).send({"type": "line", "who": "you", "text": "typed here"})
         assert len(await frames(face)) == 1 and await frames(phone) == []
+
+        # the desk unit and the watch (relayed by the phone) mirror the same way
+        for hello in ({"device_id": "desk-1", "model": "Desk", "switched": True},
+                      {"device_id": "watch-1", "model": "Galaxy Watch"}):
+            async with websockets.connect(url) as dev:
+                await dev.send(json.dumps({"type": "hello", **hello}))
+                await asyncio.sleep(0.3)
+                await frames(dev); await frames(face)
+                d = next(c for c in br._conns if c.id == hello["device_id"])
+                assert not d.face
+                br.make_sink(d).send({"type": "line", "who": "you", "text": hello["model"]})
+                assert [json.loads(m)["text"] for m in await frames(face)] == [hello["model"]]
     await br.stop()
     print("ok", cfg_file)
 
