@@ -73,8 +73,23 @@ class _Text:
 
 
 class AssistantMessage:
-    def __init__(self, text):
-        self.content = [_Text(text)]
+    def __init__(self, text=None, content=None):
+        self.content = content or [_Text(text)]
+
+
+class UserMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _ToolUse:          # a tool call in flight, for the stuck-turn watchdog
+    def __init__(self, id):
+        self.id, self.input = id, {}
+
+
+class _ToolResult:
+    def __init__(self, tool_use_id):
+        self.tool_use_id = tool_use_id
 
 
 class ResultMessage:
@@ -240,6 +255,10 @@ class HermesClient:
             self._close()
             self._put({"type": "content_block_start", "content_block": {"type": "tool_use"}})
             self._put({"type": "content_block_stop"})
+            if p.get("tool_id"):
+                self._q.put_nowait(AssistantMessage(content=[_ToolUse(p["tool_id"])]))
+        elif kind == "tool.complete" and p.get("tool_id"):
+            self._q.put_nowait(UserMessage([_ToolResult(p["tool_id"])]))
         elif kind == "subagent.start" and p.get("subagent_id"):
             self._q.put_nowait(TaskStartedMessage(
                 subtype="task_started", data=p, task_id=p["subagent_id"],
@@ -387,6 +406,7 @@ class HermesBrain(WarmBrain):
             pass
         self._client = self._new_client()
         await self._client.connect(old.stored_id)
+        self._open_tools.clear()
         self._turn_active = False
         self._current_asker = None
         self._dispatched = False
@@ -414,6 +434,13 @@ class HermesBrain(WarmBrain):
                 await c.call("session.close", {"session_id": c.sid})
                 await c._create()
                 c._last_usage = {}
+                # the closed session's turn, if any, never sends its
+                # message.complete: release it, as a rebuild does
+                self._open_tools.clear()
+                self._turn_active = self._discard_until_result = False
+                self._current_asker = None
+                self._dispatched = False
+                self._dispatch_next()
                 return "cleared"
             if verb == "/effort":
                 r = await c.call("config.set", {"session_id": c.sid, "key": "reasoning", "value": arg})
