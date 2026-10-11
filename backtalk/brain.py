@@ -98,6 +98,10 @@ FLUSH_AFTER = 0.75   # seconds of silence before a lone sentence is spoken,
                      # see the Backtalk Orphaned Sentence Bug note
 
 
+STUCK_AFTER = 180   # seconds a turn may go without a main-conversation
+                    # message before _release_if_stuck frees the session
+
+
 SESSION_FILE = os.path.join(CFG["signals_dir"], ".backtalk_session")
 
 
@@ -163,6 +167,12 @@ class WarmBrain:
         # interrupt() is a no-op when this is False: nothing in flight,
         # nothing to discard.
         self._turn_active = False
+        # When the main conversation last showed life (a send, or turn
+        # content with no parent_tool_use_id). See _release_if_stuck.
+        self._last_main = 0.0
+        # Main-conversation tool calls sent with no result yet: a long tool
+        # run is a working turn, not a silent one.
+        self._open_tools: set = set()
         # When set, the current turn's text is being collected for the
         # caller (console commands, the warmup ping) instead of being
         # spoken — see capture().
@@ -259,10 +269,31 @@ class WarmBrain:
             return
         utterance, remote_sink, self._ask_t0 = self._ask_queue.popleft()
         self._turn_active = True
+        self._last_main = time.monotonic()
         self._dispatched = True
         self._current_asker = remote_sink
         self.bus.set_active_conn(getattr(remote_sink, "conn_id", None))
         asyncio.ensure_future(self._client.query(utterance))
+
+    def _release_if_stuck(self):
+        """Backstop: a turn marked active with no main-conversation message
+        for STUCK_AFTER seconds is not running. Release it so queued asks go
+        out (overnight 2026-10-11: a phantom turn queued every ask for 9 h).
+        A tool call in flight or a live background task counts as activity.
+        True when it released one."""
+        if self._open_tools or self._active_tasks:
+            self._last_main = time.monotonic()
+            return False
+        if self._turn_active and self._capture is None \
+                and time.monotonic() - self._last_main > STUCK_AFTER:
+            log(f"[brain] WARNING: turn silent for {STUCK_AFTER}s, releasing it")
+            self._turn_active = False
+            self._discard_until_result = False
+            self._current_asker = None
+            self._dispatched = False
+            self._dispatch_next()
+            return True
+        return False
 
     def clear_tasks(self):
         """Reset the active-task set to empty (fresh launch, or the
@@ -418,6 +449,7 @@ class WarmBrain:
         self._capture_count_turn = count_turn
         self._capture_buf = []
         self._turn_active = True
+        self._last_main = time.monotonic()
         limit = float(CFG.get("capture_timeout_s") or 90)
         try:
             await self._client.query(text)
@@ -466,8 +498,10 @@ class WarmBrain:
         """Stop whatever turn is live. A no-op when nothing is in
         flight — there would be nothing for the reader to discard, and
         discarding with nothing to discard-UNTIL would eat the next
-        turn's real content instead."""
-        if not self._client or not self._turn_active:
+        turn's real content instead. The SDK interrupt also kills running
+        background helpers, so it is never sent without a real main turn."""
+        if self._release_if_stuck() or not self._client \
+                or not self._turn_active:
             return
         # a capture turn needs no discard: the reader swallows it anyway,
         # through its ResultMessage
@@ -632,7 +666,8 @@ class WarmBrain:
                 if not done:
                     if not self._discard_until_result:
                         flush()      # a pause (tool work): speak what's waiting
-                    await asyncio.wait({nxt})
+                    while not (await asyncio.wait({nxt}, timeout=30))[0]:
+                        self._release_if_stuck()
                 try:
                     msg = nxt.result()
                 except StopAsyncIteration:
@@ -682,6 +717,27 @@ class WarmBrain:
                             self.bus.set_active_conn(getattr(owner, "conn_id", None))
                         elif owner is not None:
                             self._owed.append((owner, time.time()))
+
+                if getattr(msg, "parent_tool_use_id", None):
+                    # A sub-agent's traffic (an Agent-tool helper streaming
+                    # while the main turn is idle): never a turn of ours, and
+                    # it never sends a ResultMessage to end one.
+                    self._release_if_stuck()
+                    continue
+                if t in ("StreamEvent", "AssistantMessage", "UserMessage") \
+                        or not self._turn_active and getattr(msg, "subtype", None) == "init":
+                    self._last_main = time.monotonic()
+                if t in ("AssistantMessage", "UserMessage") \
+                        and isinstance(getattr(msg, "content", None), list):
+                    for b in msg.content:
+                        if getattr(b, "tool_use_id", None):
+                            self._open_tools.discard(b.tool_use_id)
+                        elif hasattr(b, "input") and getattr(b, "id", None):
+                            self._open_tools.add(b.id)
+                if t == "ResultMessage":
+                    # ponytail: a tool that never gets its result holds off the
+                    # watchdog until the turn ends or the stream is rebuilt
+                    self._open_tools.clear()
 
                 if not self._turn_active and (
                         t in ("StreamEvent", "AssistantMessage", "UserMessage")
@@ -819,6 +875,7 @@ class WarmBrain:
         # A new CLI process: its task level starts empty and nothing
         # reports the old process's tasks again.
         self.clear_tasks()
+        self._open_tools.clear()
         # The turn that broke is gone; whatever was "in flight" no
         # longer is. Without this, a dead _turn_active=True would
         # wedge _dispatch_next forever, and nothing queued after a
