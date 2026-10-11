@@ -1705,6 +1705,7 @@ async def amain():
             # what a device's task view and picker show (see web.py's greet)
             bridge.tokens_file = os.path.join(CFG["agent_dir"], ".backtalk", "device_tokens.json")
             bridge.todo_file = os.path.join(CFG["agent_dir"], ".backtalk", "todo.json")
+            bridge.todo_txt = os.path.expanduser(CFG.get("todo_txt") or "")
             bridge.task_source = brain.task_list
             bridge.signals_dir = CFG["signals_dir"]
             who = CFG.get("peer_name") or NAME

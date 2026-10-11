@@ -142,9 +142,10 @@ Wire protocol, deliberately tiny:
                "color", "face", "hues"}      hello: who this assistant is
   text frame  {"type": "tasks", "waiting":   server -> client, on hello and
                [...], "running": [...],      every change: the session to-do
-               "todo": [...]}                list (backtalk.todo) plus the
-                                             running background tasks, each
-                                             {"text"}
+               "todo": [...], "done": [...]} list (backtalk.todo, or the
+                                             todo_txt file) plus the running
+                                             background tasks, each {"text"};
+                                             "done" only from todo_txt
   text frame  {"type": "cook", "steps":     server -> client: a cooking
                [...], "current": n}          session's steps (<<steps>>);
                                              no steps = cooking is over
@@ -535,6 +536,7 @@ class BrowserBridge:
         self._relays: dict[str, Conn] = {}  # relayed connections, by rid
         self.tokens_file = None   # main.py: device token hashes (see grant.py)
         self.todo_file = None     # main.py: the session to-do list (see todo.py)
+        self.todo_txt = None      # main.py: a plain-text list instead (config todo_txt)
         self.task_source = None   # main.py: () -> the brain's running tasks, [{"text"}]
         self.signals_dir = None   # main.py: the bus, for pushed state
         self.identity = {"type": "identity", "name": "", "color": "", "face": ""}
@@ -610,16 +612,22 @@ class BrowserBridge:
             self.on_switch(conn)
 
     def tasks_frame(self) -> dict:
-        """{"waiting", "running", "todo"}, each [{"text"}]: the to-do file's
-        items by state, then the brain's background tasks as running."""
-        out = {"type": "tasks", "waiting": [], "running": [], "todo": []}
+        """{"waiting", "running", "todo", "done"}, each [{"text"}]: the to-do
+        file's items by state, then the brain's background tasks as running."""
+        out = {"type": "tasks", "waiting": [], "running": [], "todo": [], "done": []}
         try:
-            with open(self.todo_file) as f:
-                items = json.load(f)
+            if self.todo_txt:
+                pre = {"!": "done", ">": "progress", "?": "waiting"}
+                with open(self.todo_txt) as f:
+                    items = [{"text": ln[1:].strip(), "state": pre[ln[0]]} if ln[0] in pre else {"text": ln}
+                             for ln in map(str.strip, f) if ln and not ln.startswith("#")]
+            else:
+                with open(self.todo_file) as f:
+                    items = json.load(f)
         except (OSError, TypeError, ValueError):
             items = []
         for it in items if isinstance(items, list) else []:
-            kind = {"waiting": "waiting", "progress": "running"}.get(it.get("state"), "todo")
+            kind = {"waiting": "waiting", "progress": "running", "done": "done"}.get(it.get("state"), "todo")
             out[kind].append({"text": str(it.get("text", ""))[:200]})
         try:
             out["running"] += self.task_source() if self.task_source else []
