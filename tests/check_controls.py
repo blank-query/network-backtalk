@@ -88,6 +88,8 @@ async def main():
     await conn.reader()
     assert got == ["interrupt", "abort"], got
     assert br._press_q.get_nowait()[1] is False, "a press must queue, not interrupt"
+    ident = [json.loads(m) for m in conn.ws.sent if '"identity"' in m]
+    assert ident and ident[0].get("controls") == 1, "the bridge must announce the controls"
 
     # ---- the talk key's pause: local playback holds, nothing is dropped
     chunks = [np.full(2205, i + 1, np.int16) for i in range(6)]
