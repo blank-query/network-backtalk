@@ -5,7 +5,7 @@
 # device gets who this is and the task list on hello, and the list again
 # when it changes; cooking steps; pushed face state; a peer passes a grant
 # to a connected device by name; revoking a token locks it out again.
-# A plain-text todo_txt file replaces the list, done items included.
+# A plain-text todo_txt file replaces the list, review and done items included.
 import asyncio, hashlib, json, os, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import websockets
@@ -152,10 +152,11 @@ async def main():
     # a plain-text list (config todo_txt) stands in for todo.json
     txt = os.path.join(D, "todo.txt")
     with open(txt, "w") as f:
-        f.write("# batch 3\n!shipped it\n> building\n\n?pick a color\nnot yet\n")
+        f.write("# batch 3\n<shipped it\n!check me\n> building\n\n?pick a color\nnot yet\n")
     br.todo_txt = txt
     t = br.tasks_frame()
-    assert t["done"] == [{"text": "shipped it"}] and t["waiting"] == [{"text": "pick a color"}] \
+    assert t["done"] == [{"text": "shipped it"}] and t["review"] == [{"text": "check me"}] \
+        and t["waiting"] == [{"text": "pick a color"}] \
         and t["todo"] == [{"text": "not yet"}] and t["running"][0] == {"text": "building"} \
         and len(t["running"]) == 3, t
     print("OK")
