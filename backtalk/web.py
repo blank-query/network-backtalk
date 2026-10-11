@@ -164,7 +164,10 @@ Wire protocol, deliberately tiny:
   says who it is) and "push": true (no face server to poll: the bridge
   pushes {"type": "state", ...} as it changes).
   text frame  {"type": "identity", "name",  server -> client, after every
-               "color", "face"}              hello: who this assistant is
+               "color", "face",              hello: who this assistant is;
+               "controls": 1}                "controls": it takes interrupt
+                                             and abort (older bridges: no
+                                             key, clients use interrupt_press)
   text frame  {"type": "tasks", "waiting":   server -> client, on hello and
                [...], "running": [...],      every change: the session to-do
                "todo": [...]}                list (backtalk.todo) plus the
@@ -716,7 +719,9 @@ class BrowserBridge:
 
     async def greet(self, conn: Conn, hello: dict):
         conn.push = bool(hello.get("push"))
-        await conn.ws.send(json.dumps(self.identity))
+        # "controls": this bridge takes interrupt and abort (the three controls);
+        # a client without it falls back to interrupt_press
+        await conn.ws.send(json.dumps(self.identity | {"controls": 1}))
         await conn.ws.send(json.dumps(self._tasks or self.tasks_frame()))
         if conn.id in self._cook:
             await conn.ws.send(json.dumps(self._cook[conn.id]))
