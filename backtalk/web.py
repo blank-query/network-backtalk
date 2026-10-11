@@ -38,11 +38,29 @@ Wire protocol, deliberately tiny:
                                              An optional "model" (the
                                              app's phone model) names a
                                              new device; see saw().
-  text frame  {"type": "press"}             browser -> server (queue)
-  text frame  {"type": "interrupt_press"}   browser -> server (the
-                                             Interrupt button: stop the
-                                             current turn first, THEN
-                                             record)
+  THE THREE CONTROLS, the same on every client (the Bridge Protocol note):
+  text frame  {"type": "press"}             client -> server: talk. Never
+                                             interrupts: the client pauses
+                                             its own playback (buffering
+                                             what keeps arriving) until its
+                                             capture ends, then resumes;
+                                             the words queue behind the turn
+  text frame  {"type": "interrupt"}         client -> server: a tap on
+                                             Interrupt. The voice stops and
+                                             the rest of that reply is
+                                             dropped ("stop" back); helpers
+                                             and tools keep running
+  text frame  {"type": "abort"}             client -> server: Interrupt
+                                             held ~2 s (or "<name>, abort"
+                                             spoken). As interrupt, then the
+                                             running background tasks are
+                                             read back and the next words
+                                             from this device pick what
+                                             stops ("everything", a number
+                                             or a name, "never mind")
+  text frame  {"type": "interrupt_press"}   browser -> server (older
+                                             clients' Interrupt button:
+                                             interrupt, THEN record)
   text frame  {"type": "release"}           browser -> server (with
                                              "text": the phone's own
                                              transcript of the press, used
@@ -481,6 +499,8 @@ class Conn:
                         and self.id not in self.bridge.owned:
                     # no session owns this device: a tap on the orb hangs up
                     self.bridge.end_call(self.call, "hung up")
+                elif kind in ("interrupt", "abort") and self.bridge.on_control is not None:
+                    self.bridge.on_control(self, kind)
                 elif kind == "press":
                     self.bridge._on_press(self, interrupt=False)
                 elif kind == "interrupt_press":
@@ -561,6 +581,7 @@ class BrowserBridge:
         self.on_heard = None          # main.py: (Conn, text) hands-free words from the phone
         self.on_reopen = None         # main.py: (Conn, path) a card's reopen button
         self.on_drop = None           # main.py: (Conn) the pictures and files it shared, discarded
+        self.on_control = None        # main.py: (Conn, "interrupt" | "abort")
         # Devices a dedicated session owns (main.py's sessions, by id): the
         # main session's broadcasts skip them, so its replies and stops
         # never land on, say, the kitchen mid-recipe.
