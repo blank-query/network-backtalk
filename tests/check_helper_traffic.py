@@ -4,10 +4,11 @@
 # does not interrupt (that would kill the helper), and a turn that goes silent
 # for STUCK_AFTER is released (the overnight hang, 2026-10-11), but not while
 # a tool call is in flight or a background task runs (a 3-minute tool call
-# on Friday, 2026-10-11).
+# on Friday, 2026-10-11). A barge-in during a real main turn never calls the
+# SDK interrupt either: the turn's rest is dropped and it ends on its own.
 import asyncio, sys
 sys.path.insert(0, __import__("os").path.join(__import__("os").path.dirname(__file__), ".."))
-from claude_agent_sdk import AssistantMessage, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage
+from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage
 from claude_agent_sdk.types import StreamEvent
 from backtalk import brain as B
 
@@ -60,5 +61,18 @@ async def main():
     assert not b._release_if_stuck() and b.turn_active, "a running background task was released"
     b._active_tasks, b._last_main = set(), 0.0
     assert b._release_if_stuck(), "silent turn with nothing running not released"
+    # a barge-in mid-reply (13:09:17): no SDK interrupt, output dropped,
+    # the new ask goes out when the cut-off turn ends
+    b._turn_active, b._last_main = True, __import__("time").monotonic()
+    n = len(c.queries)
+    await b.interrupt()
+    b.ask("barge-in question")
+    assert c.interrupts == 0 and b._discard_until_result, "barge-in called the SDK interrupt"
+    assert len(c.queries) == n, "ask jumped the cut-off turn"
+    c.q.put_nowait(ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+                                 num_turns=1, session_id="s"))
+    await asyncio.sleep(0.05)
+    assert c.queries[-1] == "barge-in question" and not b._discard_until_result
+    assert c.interrupts == 0
     print("OK")
 asyncio.run(main())
