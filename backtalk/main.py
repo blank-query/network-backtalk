@@ -717,7 +717,7 @@ async def amain():
     # can_use_tool needs brain.remote_sink, but brain needs can_use_tool
     # at construction, broken by constructing without it, then setting
     # it once the gate has a real brain to close over.
-    brain = WarmBrain(model=model, resume_id=resume_id, mouth=mouth)
+    brain = WarmBrain(model=model, resume_id=resume_id, mouth=mouth, label=NAME)
     brain._can_use_tool = make_permission_gate(mouth, brain)
 
     mode = ("hands-free listening (the talk key still works)"
@@ -1473,7 +1473,7 @@ async def amain():
             bus = signals.DeviceBus(conn.id)
             m = Mouth(bus=bus, local=False)
             b = WarmBrain(model=brain.model, mouth=m, bus=bus, persist=False,
-                          label=f"Jarvis@{bridge.name_of(conn.id)}", append=append)
+                          label=f"{NAME}@{bridge.name_of(conn.id)}", append=append)
             b._can_use_tool = make_permission_gate(m, b)
             b.remote_sink = bridge.make_sink(conn)
             await b.start()
