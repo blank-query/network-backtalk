@@ -504,19 +504,26 @@ class Session:
     its text. With Moonshine the audio streams into the model as it
     arrives (on a worker thread, so add() never blocks a capture loop or
     the event loop), leaving only the last moment to process at the end.
-    With whisper it just collects the audio and transcribes at the end."""
+    With whisper it just collects the audio and transcribes at the end.
+    `defer`: don't stream, transcribe in one pass at finish() if asked
+    (a phone that sends its own transcript: Moonshine's streaming runs
+    23 spinning onnxruntime threads per model part, ~100 CPU-seconds per
+    press on a loaded desktop, for a fallback that's rarely used)."""
 
-    def __init__(self, vad: bool = False):
+    def __init__(self, vad: bool = False, defer: bool = False):
         self.vad, self.frames = vad, []
         self._moon = _moonshine()
         self._q = None
-        if self._moon is not None:
-            with _moon_lock:
-                self._stream = self._moon.create_stream(update_interval=_refresh())
-                self._stream.start()
-            self._q = queue.Queue()
-            self._worker = threading.Thread(target=self._feed, daemon=True)
-            self._worker.start()
+        if self._moon is not None and not defer:
+            self._start()
+
+    def _start(self):
+        with _moon_lock:
+            self._stream = self._moon.create_stream(update_interval=_refresh())
+            self._stream.start()
+        self._q = queue.Queue()
+        self._worker = threading.Thread(target=self._feed, daemon=True)
+        self._worker.start()
 
     def _feed(self):
         while (pcm := self._q.get()) is not None:
@@ -556,6 +563,9 @@ class Session:
             with wave.open(path, "wb") as w:
                 w.setnchannels(1); w.setsampwidth(2); w.setframerate(RATE)
                 w.writeframes(pcm.astype(np.int16).tobytes())
+        if self._q is None and self._moon is not None and len(pcm):
+            self._start()               # deferred: the whole press at once
+            self._q.put(pcm)
         if self._q is None:
             return transcribe(pcm, vad=self.vad) if len(pcm) else ""
         self._q.put(None)
