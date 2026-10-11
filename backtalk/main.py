@@ -1184,6 +1184,10 @@ async def amain():
                 if a.get("silent") is True:
                     bridge.make_sink(conn).send(
                         {"type": "line", "who": "jarvis", "text": str(a.get("text") or "")})
+                    if _can(conn, "notify"):     # a notification too, for an app in the background
+                        loop.call_soon_threadsafe(bridge._send, conn, {
+                            "type": "phone", "do": "notify", "title": "Jarvis",
+                            "text": str(a.get("text") or "")[:500]})
                     log(f"[announce] silent to {bridge.name_of(conn.id)}: {str(a.get('text'))[:120]}")
                     continue
                 threading.Thread(target=_play_announcement, daemon=True,
@@ -1334,15 +1338,69 @@ async def amain():
                 log(f"[show] not shown: {e!r}")
                 loop.call_soon_threadsafe(brain_for(asker).ask, f"[Not shown: {e!r}]", asker)
 
+        tag_timers: dict = {}     # device id -> the agent's <<timers>> countdowns
+        pi_timers: list = []      # the Pi-held timers (backtalk.timer), as last read
+
+        def _face_timers(cid):
+            """A device's face shows its <<timers>> plus its Pi-held timers."""
+            name = bridge.name_of(cid)
+            mine = [{"label": t["label"], "at": t["at"], "clock": False}
+                    for t in pi_timers if name and str(t.get("device", "")).casefold() == name.casefold()]
+            signals.set_device_timers(cid, (tag_timers.get(cid, []) + mine)[:8])
+
         def _timers(arg: str, asker):
             """<<timers [{"label": ..., "at": <epoch s>, "clock": bool?}, ...]>>:
             the countdowns the asking device's face shows ([] clears)."""
             try:
-                items = [{"label": str(t["label"])[:40], "at": float(t["at"]),
-                          "clock": bool(t.get("clock"))} for t in json.loads(arg)][:8]
-                signals.set_device_timers(asker.conn_id, items)
+                tag_timers[asker.conn_id] = [{"label": str(t["label"])[:40], "at": float(t["at"]),
+                                              "clock": bool(t.get("clock"))} for t in json.loads(arg)][:8]
+                _face_timers(asker.conn_id)
             except Exception as e:
                 log(f"[timers] ignored: {e!r}")
+
+        def _can(conn, action) -> bool:
+            """Does the app on that device list this action (its hello's caps)?"""
+            return action in ((bridge.devices().get(conn.id, {}).get("caps") or {}).get("actions") or [])
+
+        def _ring_timer(t):
+            """A due Pi-held timer: announced on its device, then the device
+            rings until stopped (apps with the ring action); --buzz sends a
+            notification to a second device (sir's phone: his watch buzzes)."""
+            conn = bridge.find(str(t.get("device", "")))
+            log(f"[timer] {t['label']!r} due on {t.get('device')}"
+                + ("" if conn else ", which isn't connected: not rung"))
+            if t.get("buzz"):
+                b = bridge.find(str(t["buzz"]))
+                if b is not None and _can(b, "notify"):
+                    loop.call_soon_threadsafe(bridge._send, b, {
+                        "type": "phone", "do": "notify", "title": "Timer done", "text": t["label"]})
+            if conn is None:
+                return
+            label = t["label"] if "timer" in t["label"].casefold() else f"{t['label']} timer"
+            _play_announcement(conn, f"The {label} is done.")
+            if _can(conn, "ring"):
+                loop.call_soon_threadsafe(bridge._send, conn, {
+                    "type": "phone", "do": "ring", "label": t["label"], "max_s": 60})
+
+        async def _timer_watch():
+            """Ring Pi-held timers when due, and keep the faces' countdowns in
+            step with the list (polled each second: the CLI edits the file)."""
+            from backtalk import timer as T
+            p = os.path.join(CFG["agent_dir"], ".backtalk", "timers.json")
+            while True:
+                await asyncio.sleep(1)
+                try:
+                    for t in await loop.run_in_executor(None, T.due, p):
+                        threading.Thread(target=_ring_timer, args=(t,), daemon=True).start()
+                    now = T.load(p)
+                    if now != pi_timers:
+                        names = {str(t.get("device", "")).casefold() for t in now + pi_timers}
+                        pi_timers[:] = now
+                        for cid, d in bridge.devices().items():
+                            if str(d.get("name", "")).casefold() in names:
+                                _face_timers(cid)
+                except Exception as e:
+                    log(f"[timer] watch: {e!r}")
 
         def _steps(arg: str, asker):
             """<<steps {"steps": [...], "current": n}>>: a cooking session's
@@ -1653,6 +1711,7 @@ async def amain():
                                                       remote_sink=bridge.make_sink(conn))
             brain.remote_sink = bridge.make_broadcast_sink()
             asyncio.create_task(bridge.serve())
+            asyncio.create_task(_timer_watch())
             if CFG.get("peer_link"):
                 from backtalk.config import peer_token
                 from backtalk.say import link
