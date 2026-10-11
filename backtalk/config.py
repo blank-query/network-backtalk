@@ -349,6 +349,11 @@ DEFAULTS = {
     "identity_hues": {},
     "identity_line": "",
     "lan_url": "",
+    # A plain-text to-do list for the task view in place of todo.json
+    # ("" = todo.json): one item per line, "!" done, ">" in progress,
+    # "?" waiting on the person, else not started; blank and "#" lines
+    # are skipped. Its writer owns it (see web.py's tasks_frame).
+    "todo_txt": "",
     # An outbound link to a peer's bridge, for a machine that peer can't
     # dial (a firewall): {"url": ..., "name": "desktop"}. Kept open and
     # re-dialed; the peer's say.py reaches this machine through it.
