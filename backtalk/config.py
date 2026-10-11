@@ -160,6 +160,13 @@ DEFAULTS = {
     # frequently on a stream or a shared screen. Nothing is collected at
     # all while this is false. (Community fix, ai-visualizer issue #1.)
     "show_usage": False,
+    # The last model call's speed in the face's corner ("43 tok/s"):
+    # generation tokens over streaming time from the SDK's usage. A local
+    # model server that logs its own timings can be followed instead with
+    # "speed_log": its log path (a local server's "read in X ms (R tok/s), M
+    # generated in Y ms (G tok/s)" lines), which also gives the read speed.
+    "show_speed": True,
+    "speed_log": "",
     # Reasoning effort for the voice session: "" inherits the model's
     # default; "low" / "medium" / "high" / "max" applies at launch.
     # Saying "set effort to X" in a voice session saves itself here.

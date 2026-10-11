@@ -774,6 +774,9 @@ async def amain():
 
     typed_q: "queue.Queue[str]" = queue.Queue()
     threading.Thread(target=_typed_reader, args=(typed_q,), daemon=True).start()
+    if CFG.get("show_speed", True) and CFG.get("speed_log"):
+        threading.Thread(target=signals.tail_speed_log, args=(CFG["speed_log"],),
+                         daemon=True).start()
     typed_fut: asyncio.Future | None = None
 
     async def run_console(verb, sink=None):
