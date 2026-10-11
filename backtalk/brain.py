@@ -84,9 +84,9 @@ def _sentence_end(buf: str):
 # the bus when the audio carrying it starts. Bounded so a runaway model
 # cannot swallow a paragraph into one "tag" (long enough for a phone
 # command's text message; see mouth.py's "phone" directions). A session
-# hand-off or an announcement carries a whole brief, so those two get
-# 4000 (a 1,100-character cook-with-me brief failed silently, 2026-10-09).
-_DIRECTION_TAG = re.compile(r"<<((?:session|announce) [^<>]{1,4000}|[^<>]{1,600})>>")
+# hand-off or an announcement carries a whole brief, and a recipe's steps
+# run long, so those get 4000 (a 1,100-character cook-with-me brief failed silently, 2026-10-09).
+_DIRECTION_TAG = re.compile(r"<<((?:session|announce|steps) [^<>]{1,4000}|[^<>]{1,600})>>")
 def _line(sink, text: str):
     """The reply as text for the asking device's terminal (see web.py)."""
     send = getattr(sink, "send", None)
@@ -184,6 +184,7 @@ class WarmBrain:
         # the count). Published on every change so faces can draw one
         # satellite per task.
         self._active_tasks: set[str] = set()
+        self._task_desc: dict = {}   # task id -> what it's doing, for the devices' task view
         # Which device's turn started each background task. Its finish
         # makes the agent speak up in a turn nobody asked for just then,
         # but it WAS asked for, in advance (a cooking timer, a long
@@ -299,10 +300,16 @@ class WarmBrain:
         """Reset the active-task set to empty (fresh launch, or the
         session itself was cleared/reset underneath it)."""
         self._active_tasks.clear()
+        self._task_desc.clear()
         self._task_owner.clear()
         self._owed.clear()
         self.bus.set_tasks(0)
         self.bus.set_active_conn(None)
+
+    def task_list(self) -> list:
+        """The running background tasks, [{"text": what each is doing}]."""
+        return [{"text": str(self._task_desc.get(t) or "background task")[:200]}
+                for t in sorted(self._active_tasks)]
 
     def _start_reader(self):
         self._reader_task = asyncio.ensure_future(self._read_forever())
@@ -683,12 +690,15 @@ class WarmBrain:
                     # schema), so a bookend that never came (TaskStop, a
                     # shell that just exited, a stop by the user) can't
                     # leave a ghost. Ambient tasks are CLI housekeeping.
-                    self._active_tasks = {
-                        t["task_id"] for t in msg.data.get("tasks") or []
-                        if t.get("task_id") and not t.get("ambient")}
+                    live = [t for t in msg.data.get("tasks") or []
+                            if t.get("task_id") and not t.get("ambient")]
+                    self._active_tasks = {t["task_id"] for t in live}
+                    self._task_desc = {t["task_id"]: t.get("description")
+                                       or self._task_desc.get(t["task_id"]) for t in live}
                     self.bus.set_tasks(len(self._active_tasks))
                 elif isinstance(msg, TaskStartedMessage):
                     self._active_tasks.add(msg.task_id)
+                    self._task_desc[msg.task_id] = msg.description
                     self.bus.set_tasks(len(self._active_tasks))
                     if self._current_asker is not None:
                         self._task_owner[msg.task_id] = self._current_asker
@@ -701,6 +711,7 @@ class WarmBrain:
                         or (getattr(msg, "patch", None) or {}).get("status")
                     if status is not None and status not in LIVE_TASK_STATUSES:
                         self._active_tasks.discard(msg.task_id)
+                        self._task_desc.pop(msg.task_id, None)
                         self.bus.set_tasks(len(self._active_tasks))
                         # The turn this finish triggers comes next: owe it
                         # to the device that started the task, unless a

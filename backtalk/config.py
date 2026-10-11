@@ -328,8 +328,18 @@ DEFAULTS = {
     # {"name": {"url": "ws://host:8792", "mac": "aa:bb:..." (wake it
     # first), "via": "name" (reach it through that peer's link, below)}}
     "peers": {},
-    # How this agent names itself to its peers ("Pi Jarvis").
+    # How this agent names itself to its peers ("Pi Jarvis"), and to the
+    # devices that can pick it.
     "peer_name": "",
+    # WHO THIS IS, for a device that can pick between assistants: the
+    # frame color its face gets ("#rrggbb"), the ai-visualizer face it
+    # shows ("rain-f"), the line it says when picked ("" = "<name> here."),
+    # and how a device on the LAN reaches this bridge ("ws://<address>:8792",
+    # for grant.py).
+    "identity_color": "",
+    "identity_face": "",
+    "identity_line": "",
+    "lan_url": "",
     # An outbound link to a peer's bridge, for a machine that peer can't
     # dial (a firewall): {"url": ..., "name": "desktop"}. Kept open and
     # re-dialed; the peer's say.py reaches this machine through it.
