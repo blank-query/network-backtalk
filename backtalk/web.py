@@ -142,10 +142,12 @@ Wire protocol, deliberately tiny:
                "color", "face", "hues"}      hello: who this assistant is
   text frame  {"type": "tasks", "waiting":   server -> client, on hello and
                [...], "running": [...],      every change: the session to-do
-               "todo": [...], "done": [...]} list (backtalk.todo, or the
-                                             todo_txt file) plus the running
+               "review": [...], "todo": [...], list (backtalk.todo, or the
+               "done": [...]}                todo_txt file) plus the running
                                              background tasks, each {"text"};
-                                             "done" only from todo_txt
+                                             "review" (finished, awaiting
+                                             review) and "done" (accepted)
+                                             only from todo_txt
   text frame  {"type": "cook", "steps":     server -> client: a cooking
                [...], "current": n}          session's steps (<<steps>>);
                                              no steps = cooking is over
@@ -612,12 +614,13 @@ class BrowserBridge:
             self.on_switch(conn)
 
     def tasks_frame(self) -> dict:
-        """{"waiting", "running", "todo", "done"}, each [{"text"}]: the to-do
-        file's items by state, then the brain's background tasks as running."""
-        out = {"type": "tasks", "waiting": [], "running": [], "todo": [], "done": []}
+        """{"waiting", "running", "review", "todo", "done"}, each [{"text"}]:
+        the to-do file's items by state, then the brain's background tasks
+        as running."""
+        out = {"type": "tasks", "waiting": [], "running": [], "review": [], "todo": [], "done": []}
         try:
             if self.todo_txt:
-                pre = {"!": "done", ">": "progress", "?": "waiting"}
+                pre = {">": "progress", "!": "review", "<": "done", "?": "waiting"}
                 with open(self.todo_txt) as f:
                     items = [{"text": ln[1:].strip(), "state": pre[ln[0]]} if ln[0] in pre else {"text": ln}
                              for ln in map(str.strip, f) if ln and not ln.startswith("#")]
@@ -627,7 +630,8 @@ class BrowserBridge:
         except (OSError, TypeError, ValueError):
             items = []
         for it in items if isinstance(items, list) else []:
-            kind = {"waiting": "waiting", "progress": "running", "done": "done"}.get(it.get("state"), "todo")
+            kind = {"waiting": "waiting", "progress": "running", "review": "review",
+                    "done": "done"}.get(it.get("state"), "todo")
             out[kind].append({"text": str(it.get("text", ""))[:200]})
         try:
             out["running"] += self.task_source() if self.task_source else []
