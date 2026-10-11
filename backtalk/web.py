@@ -653,7 +653,11 @@ class BrowserBridge:
         except (ValueError, AttributeError):
             timers = []
         tasks = read(".voice_tasks", "0")
-        return {"type": "state", "state": state, "level": level, "samples": samples,
+        try:
+            speed = json.loads(read(".voice_speed", "{}"))
+        except ValueError:
+            speed = {}
+        return {"type": "state", "state": state, "level": level, "samples": samples, "speed": speed,
                 "loading": os.path.exists(os.path.join(self.signals_dir or "", ".voice_loading_pid")),
                 "tasks": int(tasks) if tasks.isdigit() else 0,
                 "active_conn": read(".voice_active_conn"), "timers": timers}

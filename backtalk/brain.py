@@ -550,6 +550,7 @@ class WarmBrain:
         # thinking block, then a tool call, no text) is never spoken, and
         # this line is how that gets caught (seen once, 2026-10-04).
         shape: list = []
+        gen_t0 = None      # first streamed delta of the model call in flight
 
         def log_shape():
             nonlocal shape
@@ -788,6 +789,17 @@ class WarmBrain:
                         continue
                     ev = getattr(msg, "event", {}) or {}
                     kind = ev.get("type")
+                    if kind == "message_start":
+                        gen_t0 = None
+                    elif kind == "content_block_delta" and gen_t0 is None:
+                        gen_t0 = time.monotonic()
+                    elif kind == "message_delta" and gen_t0 and not CFG.get("speed_log"):
+                        # one model call's output tokens over its streaming
+                        # time (thinking included), for the face's readout
+                        n = int((ev.get("usage") or {}).get("output_tokens") or 0)
+                        dt = time.monotonic() - gen_t0
+                        if n > 5 and dt > 0.2:
+                            self.bus.set_speed(n / dt)
                     if kind == "content_block_start":
                         shape.append([(ev.get("content_block") or {}).get("type", "?"), 0])
                     elif kind == "content_block_delta":
