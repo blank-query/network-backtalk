@@ -1866,7 +1866,8 @@ async def amain():
                 try:
                     pcm = await bridge.record_until_release(
                         conn, abort=lambda: _MIC["gen"] != g,
-                        on_audio=session.add)
+                        on_audio=session.add,
+                        max_s=float(CFG.get("hands_free_timeout_s") or 120))
                     held = time.monotonic() - press_t
                     # a tap nobody spoke into: dropped, phone words and all
                     phone = None if conn.tap_dropped else getattr(conn, "release_text", None)
