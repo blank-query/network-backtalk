@@ -101,7 +101,10 @@ Wire protocol, deliberately tiny:
                                              client sends {"type":
                                              "reopen", "path": ...} and
                                              gets the file's current
-                                             contents as a "show"
+                                             contents as a "show";
+                                             "show": {time} is a
+                                             reply's timing tag,
+                                             shown dim, not spoken
   text frame  {"type": "call", "on": b,     server -> client: an intercom
                "with": name}                 call started or ended. While
                                              on, the client streams its mic

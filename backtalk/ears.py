@@ -439,6 +439,20 @@ def transcribe(pcm: np.ndarray, vad: bool = False) -> str:
 
 
 # ---- Moonshine (stt_engine "moonshine"): one model, one stream per capture.
+# The last utterance's speech-to-text time, [when, seconds]: brain.ask
+# takes it for the reply's timing tag in the terminal (see take_heard).
+HEARD = [0.0, None]
+
+
+def take_heard():
+    """Seconds the last utterance took to transcribe, if it finished in
+    the last 5 s (it's this ask's), else None. Once only."""
+    t, s = HEARD
+    HEARD[1] = None
+    # newest utterance wins; two devices finishing within 5 s may swap tags
+    return s if s is not None and time.time() - t < 5 else None
+
+
 _moon = None            # the loaded moonshine_voice.Transcriber, or False
 _moon_lock = threading.Lock()   # one inference at a time across streams
 
@@ -529,7 +543,8 @@ class Session:
             text = re.sub(pattern, fix, text, flags=re.IGNORECASE)
         if text:
             engine = "moonshine" if self._moon is not None else "whisper"
-            log(f"[ears] heard in {time.time() - t0:.2f}s after you stopped ({engine})")
+            HEARD[:] = [time.time(), time.time() - t0]
+            log(f"[ears] heard in {HEARD[1]:.2f}s after you stopped ({engine})")
         return text
 
     def _finish(self) -> str:
