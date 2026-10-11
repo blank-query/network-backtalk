@@ -434,6 +434,7 @@ class HermesBrain(WarmBrain):
             if verb == "/clear":
                 await c.call("session.close", {"session_id": c.sid})
                 await c._create()
+                self._remember_session(ResultMessage({}, c.stored_id, None))   # the pointer follows the clear
                 c._last_usage = {}
                 # the closed session's turn, if any, never sends its
                 # message.complete: release it, as a rebuild does

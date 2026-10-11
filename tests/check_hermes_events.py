@@ -41,7 +41,7 @@ class Stub:
 
 
 class Fake:
-    sid, queries = "live", []
+    sid, stored_id, queries = "live", None, []
     async def call(s, *a, **k): return {}
     async def _create(s): s.sid = "new"
     async def query(s, u): s.queries.append(u)
@@ -57,4 +57,23 @@ async def clear():
     await asyncio.sleep(0)
     assert b._client.queries == ["typed after the clear"], b._client.queries
 asyncio.run(clear())
+
+# resume_last_session false (Friday): no pointer is ever written, so a
+# restart starts fresh; true: /clear moves the pointer to the new session
+import tempfile
+import backtalk.brain_hermes as H
+from backtalk.config import CFG
+H.SESSION_FILE = os.path.join(tempfile.mkdtemp(), ".backtalk_session_hermes")
+
+
+async def pointer(flag):
+    CFG["resume_last_session"] = flag
+    b = HermesBrain(mouth=Stub(), bus=Stub())
+    b._client = Fake()
+    b._client.stored_id = "new-stored"
+    b._remember_session(H.ResultMessage({}, "old-stored", None))
+    await b.command("/clear")
+    return open(H.SESSION_FILE).read() if os.path.exists(H.SESSION_FILE) else None
+assert asyncio.run(pointer(False)) is None, "resume off still wrote a session pointer"
+assert asyncio.run(pointer(True)) == "new-stored", "/clear left the pointer on the old session"
 print("OK")
