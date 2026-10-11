@@ -125,6 +125,22 @@ Wire protocol, deliberately tiny:
                                              turn for this device is over
                                              (sent even for a text-only
                                              reply, which has no reply_done)
+  DEVICE TOKENS: a hello with "device_token" (issued to one device by
+  `python -m backtalk.grant`, kept here only as a hash) lets that device
+  in when require_token is on; a wrong one closes it (4401). Its hello
+  may carry "switched": true (the person just picked this assistant: it
+  says who it is) and "push": true (no face server to poll: the bridge
+  pushes {"type": "state", ...} as it changes).
+  text frame  {"type": "identity", "name",  server -> client, after every
+               "color", "face"}              hello: who this assistant is
+  text frame  {"type": "tasks", "waiting":   server -> client, on hello and
+               [...], "running": [...],      every change: the session to-do
+               "todo": [...]}                list (backtalk.todo) plus the
+                                             running background tasks, each
+                                             {"text"}
+  text frame  {"type": "cook", "steps":     server -> client: a cooking
+               [...], "current": n}          session's steps (<<steps>>);
+                                             no steps = cooking is over
   PEERS (another agent; see say.py): a hello with "token" (the shared
   peer secret) and "name" makes the connection a peer, answered with
   {"type": "peer_ok"}; a wrong token closes it, and so does a missing
@@ -132,7 +148,10 @@ Wire protocol, deliberately tiny:
   with "link": name is that machine's outbound link (config peer_link);
   one with "to": name is relayed down that link whole, every JSON frame
   each way wrapped as {"type": "relay", "rid": ..., "frame": {...}}
-  ({"close": true} when either end goes).
+  ({"close": true} when either end goes). A peer's {"type": "deliver",
+  "device": name, "frame": {"type": "grant", ...}} passes a device grant
+  (grant.py) to that connected device, answered {"type": "delivered",
+  "ok": b}.
   text frame  {"type": "listen", "on": b,   server -> browser: hands-
                "muted": b}
                                              free on or off for that
@@ -168,6 +187,7 @@ import asyncio
 import audioop
 import base64
 import collections
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -298,7 +318,8 @@ class Conn:
                 except ValueError:
                     continue
                 kind = data.get("type")
-                if not self.authed and not (kind == "hello" and data.get("token")):
+                if not self.authed and not (kind == "hello" and (data.get("token")
+                                                                or data.get("device_token"))):
                     log(f"[peer] refused {self.ws.remote_address[0]}: no token")
                     await self.ws.close(4401, "token required")
                     return
@@ -308,6 +329,15 @@ class Conn:
                 if kind == "relay" and self.bridge.links.get(self.peer_link) is self:
                     self.bridge.relay_down(data)
                     continue
+                if kind == "hello" and data.get("token") is None \
+                        and data.get("device_token") is not None and not self.authed:
+                    who = self.bridge.check_device_token(data["device_token"])
+                    if who is None:
+                        log(f"[web] refused {self.ws.remote_address[0]}: wrong device token")
+                        await self.ws.close(4401, "wrong token")
+                        return
+                    self.authed = True
+                    log(f"[web] device token for {who} accepted")
                 if kind == "hello" and data.get("token") is not None:
                     if not self.bridge.check_token(data.get("token")):
                         log(f"[peer] refused {self.ws.remote_address[0]}: wrong token")
@@ -342,6 +372,8 @@ class Conn:
                         self.bridge.set_listening(self, True, muted=self.bridge._hf_ids[self.id])
                     else:
                         await self.ws.send(json.dumps({"type": "listen", "on": False, "muted": False}))
+                    if not self.peer:
+                        await self.bridge.greet(self, data)
                 elif kind == "text" and self.bridge.on_text is not None:
                     t = str(data.get("text") or "").strip()[:4000]
                     if t:
@@ -359,6 +391,9 @@ class Conn:
                     if t:
                         self.heard_at = time.monotonic()
                         self.bridge.on_heard(self, t)
+                elif kind == "deliver" and self.peer:
+                    await self.ws.send(json.dumps(
+                        {"type": "delivered", "ok": self.bridge.deliver(self, data)}))
                 elif kind == "reopen" and self.bridge.on_reopen is not None:
                     self.bridge.on_reopen(self, str(data.get("path") or ""))
                 elif kind == "app_status":
@@ -461,6 +496,131 @@ class BrowserBridge:
         self._token = None            # the peer secret, read once (see check_token)
         self.links: dict[str, Conn] = {}    # peer links, by the name they serve
         self._relays: dict[str, Conn] = {}  # relayed connections, by rid
+        self.tokens_file = None   # main.py: device token hashes (see grant.py)
+        self.todo_file = None     # main.py: the session to-do list (see todo.py)
+        self.task_source = None   # main.py: () -> the brain's running tasks, [{"text"}]
+        self.signals_dir = None   # main.py: the bus, for pushed state
+        self.identity = {"type": "identity", "name": "", "color": "", "face": ""}
+        self.on_switch = None     # main.py: (Conn) the person just picked this assistant
+        self._cook: dict[str, dict] = {}    # device id -> its cooking steps frame
+        self._tasks = None                  # the last tasks frame sent
+
+    # ---- device tokens (see grant.py): hashes only, read fresh each
+    # time, so a revoke applies at the next connect
+
+    def check_device_token(self, tok) -> str | None:
+        """The device a token was issued to, or None."""
+        try:
+            with open(self.tokens_file) as f:
+                entry = json.load(f).get(hashlib.sha256(str(tok).encode()).hexdigest())
+        except (OSError, TypeError, ValueError):
+            return None
+        return str(entry.get("device") or "device") if isinstance(entry, dict) else None
+
+    def deliver(self, peer: Conn, data: dict) -> bool:
+        """A peer passes a grant to one of this bridge's devices (it is
+        never kept or logged here)."""
+        frame, conn = data.get("frame"), self.find(str(data.get("device") or ""))
+        ok = conn is not None and isinstance(frame, dict) and frame.get("type") == "grant"
+        if ok:
+            self._send(conn, frame)
+        log(f"[peer] {peer.peer}'s grant for {data.get('device')!r} "
+            + ("delivered" if ok else "not delivered"))
+        return ok
+
+    # ---- what a device sees besides the conversation: who this is, the
+    # session's to-do list and running tasks, cooking steps, and (for a
+    # device with no face server to poll) the face's state
+
+    async def greet(self, conn: Conn, hello: dict):
+        conn.push = bool(hello.get("push"))
+        await conn.ws.send(json.dumps(self.identity))
+        await conn.ws.send(json.dumps(self._tasks or self.tasks_frame()))
+        if conn.id in self._cook:
+            await conn.ws.send(json.dumps(self._cook[conn.id]))
+        if hello.get("switched") and self.on_switch is not None:
+            self.on_switch(conn)
+
+    def tasks_frame(self) -> dict:
+        """{"waiting", "running", "todo"}, each [{"text"}]: the to-do file's
+        items by state, then the brain's background tasks as running."""
+        out = {"type": "tasks", "waiting": [], "running": [], "todo": []}
+        try:
+            with open(self.todo_file) as f:
+                items = json.load(f)
+        except (OSError, TypeError, ValueError):
+            items = []
+        for it in items if isinstance(items, list) else []:
+            kind = {"waiting": "waiting", "progress": "running"}.get(it.get("state"), "todo")
+            out[kind].append({"text": str(it.get("text", ""))[:200]})
+        try:
+            out["running"] += self.task_source() if self.task_source else []
+        except Exception:
+            pass
+        return out
+
+    def set_cook(self, conn_id: str, steps: list, current: int = 0):
+        """A cooking session's steps for its device ([] = cooking's over)."""
+        frame = {"type": "cook", "steps": [str(x)[:200] for x in steps][:40], "current": int(current)}
+        if frame["steps"]:
+            self._cook[conn_id] = frame
+        else:
+            self._cook.pop(conn_id, None)
+        for c in list(self._conns):
+            if c.id == conn_id and not c.disconnected:
+                self._send(c, frame)
+
+    def bus_state(self, conn_id) -> dict:
+        """The face's state, as the face server's /state has it (shared bus
+        only, plus this device's timers).
+        ponytail: a device owned by a dedicated session shows the main
+        session's state here; read .voice_devices' entry if one ever does."""
+        def read(name, default=""):
+            try:
+                with open(os.path.join(self.signals_dir, name)) as f:
+                    return f.read().strip()
+            except (OSError, TypeError):
+                return default
+        state = read(".voice_state", "idle").lower()
+        samples, level = [0.0] * 64, 0.0
+        try:
+            w = json.loads(read(".voice_waveform", "{}"))
+            if w.get("samples") and time.time() - float(w.get("ts", 0)) < 0.6:
+                state, samples = "speaking", [float(x) for x in w["samples"][:64]]
+                level = min(1.0, sum(abs(x) for x in samples) / len(samples) / 3000.0)
+        except (ValueError, TypeError, AttributeError):
+            pass
+        try:
+            timers = json.loads(read(".voice_devices", "{}")).get(conn_id, {}).get("timers") or []
+        except (ValueError, AttributeError):
+            timers = []
+        tasks = read(".voice_tasks", "0")
+        return {"type": "state", "state": state, "level": level, "samples": samples,
+                "loading": os.path.exists(os.path.join(self.signals_dir or "", ".voice_loading_pid")),
+                "tasks": int(tasks) if tasks.isdigit() else 0,
+                "active_conn": read(".voice_active_conn"), "timers": timers}
+
+    async def _push_watch(self):
+        """Tasks to every device when they change (polled each second, so
+        the to-do file needs no notifier), and the face's state to the
+        devices that asked for it, about eight times a second."""
+        n = 0
+        while True:
+            await asyncio.sleep(0.125)
+            n += 1
+            conns = [c for c in list(self._conns) if c.id and not c.peer and not c.disconnected]
+            if n % 8 == 0:
+                t = self.tasks_frame()
+                if t != self._tasks:
+                    self._tasks = t
+                    for c in conns:
+                        self._send(c, t)
+            for c in conns:
+                if getattr(c, "push", False) and self.signals_dir:
+                    st = self.bus_state(c.id)
+                    if st != getattr(c, "last_state", None):
+                        c.last_state = st
+                        self._send(c, st)
 
     # ---- peers (see the docstring's PEERS)
 
@@ -534,6 +694,7 @@ class BrowserBridge:
                                               max_size=48 * 2**20)   # shared pictures and files (~35 MB after base64)
         log(f"[web] browser bridge listening on ws://{host}:{port}")
         asyncio.ensure_future(self._update_watch())
+        asyncio.ensure_future(self._push_watch())
         await self._server.wait_closed()
 
     def _on_press(self, conn: Conn, interrupt: bool = False):

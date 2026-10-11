@@ -8,4 +8,6 @@ m = R.findall(f'Over to you. <<session {{"purpose": "cook with me", "brief": "{b
 assert len(m) == 1 and m[0].startswith("session ") and len(m[0]) > 1100, m
 assert R.findall("<<quiet>> hi <<timers []>>") == ["quiet", "timers []"]
 assert R.findall("<<" + "y" * 700 + ">>") == []
+steps = '<<steps {"steps": [' + ",".join(['"step"'] * 150) + '], "current": 2}>>'
+assert len(R.findall(steps)) == 1 and len(steps) > 1000, "a recipe's steps are one tag"
 print("OK")

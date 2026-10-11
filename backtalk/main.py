@@ -1164,6 +1164,8 @@ async def amain():
                     _session(d[8:].strip(), asker)
                 if d.startswith("timers "):
                     _timers(d[7:], asker)
+                if d.startswith("steps "):
+                    _steps(d[6:], asker)
                 if d.startswith("show "):
                     _show(d[5:].strip().strip('"'), asker)
                 if not d.startswith("announce "):
@@ -1342,6 +1344,18 @@ async def amain():
             except Exception as e:
                 log(f"[timers] ignored: {e!r}")
 
+        def _steps(arg: str, asker):
+            """<<steps {"steps": [...], "current": n}>>: a cooking session's
+            steps for the asking device's swipe-down panel, the current one
+            highlighted (<<steps []>> clears them)."""
+            try:
+                a = json.loads(arg)
+                a = a if isinstance(a, dict) else {"steps": a}
+                loop.call_soon_threadsafe(bridge.set_cook, asker.conn_id, list(a.get("steps") or []),
+                                          int(a.get("current") or 0))
+            except Exception as e:
+                log(f"[steps] ignored: {e!r}")
+
         def _session(arg: str, asker):
             """<<session {"purpose", "brief", "hands_free"?}>> from the main
             session: a dedicated session takes over the asking device.
@@ -1356,6 +1370,7 @@ async def amain():
                         if b is None:
                             return
                         log(f"[session] ended on {bridge.name_of(cid)}")
+                        bridge.set_cook(cid, [])
                         handed_back[cid] = "the dedicated session for this device has ended; it's yours again"
                         await loop.run_in_executor(None, lambda: b.mouth.wait_done(timeout=30))
                         await b.stop()
@@ -1626,6 +1641,16 @@ async def amain():
             os.makedirs(os.path.dirname(bridge.devices_file), exist_ok=True)
             DIRECTION_HOOKS.append(_announce)
             bridge.owned = sessions
+            # what a device's task view and picker show (see web.py's greet)
+            bridge.tokens_file = os.path.join(CFG["agent_dir"], ".backtalk", "device_tokens.json")
+            bridge.todo_file = os.path.join(CFG["agent_dir"], ".backtalk", "todo.json")
+            bridge.task_source = brain.task_list
+            bridge.signals_dir = CFG["signals_dir"]
+            who = CFG.get("peer_name") or NAME
+            bridge.identity = {"type": "identity", "name": who, "color": CFG.get("identity_color") or "",
+                               "face": CFG.get("identity_face") or ""}
+            bridge.on_switch = lambda conn: mouth.say(CFG.get("identity_line") or f"{who} here.",
+                                                      remote_sink=bridge.make_sink(conn))
             brain.remote_sink = bridge.make_broadcast_sink()
             asyncio.create_task(bridge.serve())
             if CFG.get("peer_link"):
