@@ -136,7 +136,7 @@ Wire protocol, deliberately tiny:
   says who it is) and "push": true (no face server to poll: the bridge
   pushes {"type": "state", ...} as it changes).
   text frame  {"type": "identity", "name",  server -> client, after every
-               "color", "face"}              hello: who this assistant is
+               "color", "face", "hues"}      hello: who this assistant is
   text frame  {"type": "tasks", "waiting":   server -> client, on hello and
                [...], "running": [...],      every change: the session to-do
                "todo": [...]}                list (backtalk.todo) plus the
