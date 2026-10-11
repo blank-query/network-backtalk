@@ -69,6 +69,9 @@ Wire protocol, deliberately tiny:
                                              {"type": "image_used"} once
                                              it rides along with a
                                              question
+  text frame  {"type": "image_drop"}        client -> server: discard the
+                                             pictures and files shared
+                                             since its last question
   text frame  {"type": "file", "name": ...,   client -> server: any other
                "mime": ..., "data": b64}       shared file (share sheet or
                                              the terminal's +); acked with
@@ -224,6 +227,39 @@ NO_AUDIO_S = 8.0
 CALL_VOICE_RMS = 500   # a caller frame this loud opens the call at the far end
 CALL_RING_S = 20       # the caller has this long to start talking
 DEVICE_WAIT_S = 120    # a device action's answer (a confirm card waits 90 s for a tap)
+# A <<show>> picture rides in a "show" frame as a markdown data URL. Under
+# this it goes as it is; over it, ffmpeg shrinks it to a JPEG at most
+# IMAGE_SIDE px on its long side. The frame stays under IMAGE_MAX so no
+# client's message limit (1 MB in many) can drop the socket.
+IMAGE_KEEP = 400_000
+IMAGE_SIDE = 1280
+IMAGE_MAX = 900_000
+IMAGE_TYPES = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp", ".gif": "gif"}
+# devices with no screen for a picture (the hello's "model"): never sent one
+NO_IMAGE_MODELS = ("Desk", "Galaxy Watch")
+
+
+def image_card(path: str) -> str:
+    """A picture file as one markdown line, ![name](data:image/...;base64,...),
+    which the face draws as an image at card width (tap: full size)."""
+    import subprocess
+    kind = IMAGE_TYPES[os.path.splitext(path)[1].lower()]
+    with open(path, "rb") as f:
+        data = f.read(IMAGE_KEEP + 1)
+    if len(data) > IMAGE_KEEP:
+        for side, q in ((IMAGE_SIDE, 5), (960, 9)):     # q: ffmpeg's JPEG scale, 5 is about 80
+            data = subprocess.run(
+                ["ffmpeg", "-v", "error", "-i", path, "-frames:v", "1", "-vf",
+                 f"scale='min({side},iw)':'min({side},ih)':force_original_aspect_ratio=decrease",
+                 "-q:v", str(q), "-f", "image2pipe", "-c:v", "mjpeg", "-"],
+                capture_output=True, timeout=30, check=True).stdout
+            kind = "jpeg"
+            if len(data) * 4 // 3 < IMAGE_MAX:
+                break
+    b64 = base64.b64encode(data).decode()
+    if len(b64) > IMAGE_MAX:
+        raise ValueError(f"picture still {len(b64) // 1024} KB after shrinking")
+    return f"![{os.path.basename(path).translate({91: None, 93: None})}](data:image/{kind};base64,{b64})"
 
 
 def chime(rate: int) -> np.ndarray:
@@ -467,6 +503,8 @@ class Conn:
                         await self.ws.send(json.dumps({"type": "image_ok"}))
                     except Exception as e:
                         log(f"[web] shared image dropped: {e}")
+                elif kind == "image_drop" and self.bridge.on_drop is not None:
+                    self.bridge.on_drop(self)
                 elif kind == "file" and self.bridge.on_file is not None:
                     try:
                         name = str(data.get("name") or "file")
@@ -512,6 +550,7 @@ class BrowserBridge:
         self.on_text = None           # main.py: (Conn, text) typed in the terminal
         self.on_heard = None          # main.py: (Conn, text) hands-free words from the phone
         self.on_reopen = None         # main.py: (Conn, path) a card's reopen button
+        self.on_drop = None           # main.py: (Conn) the pictures and files it shared, discarded
         # Devices a dedicated session owns (main.py's sessions, by id): the
         # main session's broadcasts skip them, so its replies and stops
         # never land on, say, the kitchen mid-recipe.
