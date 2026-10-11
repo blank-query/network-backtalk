@@ -139,6 +139,12 @@ Wire protocol, deliberately tiny:
                                              asks for it, and it comes as
                                              {"type": "app_chunk", "data":
                                              base64, "last": b} frames
+  text frame  {"type": "file_get",          client -> server: a <<show>>
+               "path": ...}                  file card's file (only one shown
+                                             on that device), as {"type":
+                                             "file_chunk", "path", "data":
+                                             base64, "last": b} frames of
+                                             256 KB (or one with "error")
   text frame  {"type": "hangup"}            client -> server: end the call
                                              (so does either end
                                              disconnecting, or a press on a
@@ -253,6 +259,11 @@ IMAGE_KEEP = 400_000
 IMAGE_SIDE = 1280
 IMAGE_MAX = 900_000
 IMAGE_TYPES = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp", ".gif": "gif"}
+# Any other file that isn't text goes as a file card (name and size); a
+# long press on it fetches it ("file_get") in FILE_CHUNK pieces, as an app
+# update does, so a big file never rides in one frame.
+FILE_MAX = 25 * 2**20
+FILE_CHUNK = 256 * 1024
 # devices with no screen for a picture (the hello's "model"): never sent one
 NO_IMAGE_MODELS = ("Desk", "Galaxy Watch")
 
@@ -278,6 +289,40 @@ def image_card(path: str) -> str:
     if len(b64) > IMAGE_MAX:
         raise ValueError(f"picture still {len(b64) // 1024} KB after shrinking")
     return f"![{os.path.basename(path).translate({91: None, 93: None})}](data:image/{kind};base64,{b64})"
+
+
+def is_text(path: str) -> bool:
+    """Shown as a document card (UTF-8, no NULs in its first 8 KB)?"""
+    with open(path, "rb") as f:
+        head = f.read(8192)
+    if b"\0" in head:
+        return False
+    try:
+        head.decode("utf-8")
+        return True
+    except UnicodeDecodeError as e:
+        return e.start > len(head) - 4    # only a character cut at the edge
+
+
+def file_card(path: str) -> str:
+    """A non-text file as one markdown line the face draws as a file card:
+    [file: name](jarvis-file:<quoted path>#<size>)."""
+    from urllib.parse import quote
+    size = os.path.getsize(path)
+    if size > FILE_MAX:
+        raise ValueError(f"{size // 2**20} MB is over the {FILE_MAX // 2**20} MB file limit")
+    return f"[file: {os.path.basename(path).translate({91: None, 93: None})}](jarvis-file:{quote(path)}#{size})"
+
+
+def file_frames(path: str):
+    """The file as {"type": "file_chunk", "path", "data", "last"} frames."""
+    with open(path, "rb") as f:
+        data = f.read(FILE_MAX + 1)
+    if len(data) > FILE_MAX:
+        raise ValueError("over the file limit")
+    for i in range(0, max(len(data), 1), FILE_CHUNK):
+        yield {"type": "file_chunk", "path": path, "last": i + FILE_CHUNK >= len(data),
+               "data": base64.b64encode(data[i:i + FILE_CHUNK]).decode()}
 
 
 def chime(rate: int) -> np.ndarray:
@@ -481,6 +526,8 @@ class Conn:
                     # waiting for the person, 3 cancelled, others failed)
                     log(f"[app] {self.bridge.name_of(self.id)} install status "
                         f"{data.get('code')} {str(data.get('message') or '')[:200]}")
+                elif kind == "file_get" and self.bridge.on_file_get is not None:
+                    asyncio.ensure_future(self.bridge.on_file_get(self, str(data.get("path") or "")))
                 elif kind == "app_get":
                     asyncio.ensure_future(self.bridge.send_update(self))
                 elif kind == "hangup" and self.call:
@@ -570,6 +617,7 @@ class BrowserBridge:
         self.on_text = None           # main.py: (Conn, text) typed in the terminal
         self.on_heard = None          # main.py: (Conn, text) hands-free words from the phone
         self.on_reopen = None         # main.py: (Conn, path) a card's reopen button
+        self.on_file_get = None       # main.py: async (Conn, path) a file card's save
         self.on_drop = None           # main.py: (Conn) the pictures and files it shared, discarded
         self.on_control = None        # main.py: (Conn, "interrupt" | "abort")
         # Devices a dedicated session owns (main.py's sessions, by id): the

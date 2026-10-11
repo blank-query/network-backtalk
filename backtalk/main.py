@@ -80,7 +80,8 @@ from backtalk.ears import (Ears, Session, babble, explain_audio_failure,
 from backtalk.mouth import DIRECTION_HOOKS, Mouth, synth_stream, warm as warm_mouth
 from backtalk.ptt import PTTListener
 from backtalk.vlog import log
-from backtalk.web import BrowserBridge, ListenStream, beep, chime, image_card, IMAGE_TYPES, NO_IMAGE_MODELS
+from backtalk.web import (BrowserBridge, ListenStream, beep, chime, image_card, IMAGE_TYPES, NO_IMAGE_MODELS,
+                          is_text, file_card, file_frames)
 
 NAME = CFG["name"]
 # When the last spoken (not typed) question came in, any device; see handle().
@@ -1422,6 +1423,8 @@ async def amain():
             then (the face sends "reopen", which lands here, button off).
             A picture (png, jpg, webp, gif) goes as an image card, shrunk
             server-side (web.image_card); never to the desk unit or watch.
+            Any other non-text file goes as a file card (web.file_card)
+            the device may then fetch with file_get.
             <<show {"path": ..., "to": "<device name>"}>> shows it on that
             device instead (a peer's or a background turn's has no asker)."""
             if arg.startswith("{"):
@@ -1453,6 +1456,9 @@ async def amain():
                     if model in NO_IMAGE_MODELS:
                         raise ValueError(f"the {model} has no screen for pictures")
                     text = image_card(path)
+                elif not is_text(path):
+                    text = file_card(path)
+                    shown_files.setdefault(asker.conn_id, set()).add(path)
                 else:
                     with open(path, encoding="utf-8") as f:
                         text = f.read(200_000)
@@ -1468,6 +1474,19 @@ async def amain():
             except Exception as e:
                 log(f"[show] not shown: {e!r}")
                 loop.call_soon_threadsafe(brain_for(asker).ask, f"[Not shown: {e!r}]", asker)
+
+        shown_files: dict = {}    # device id -> files shown there as cards: the only ones it may fetch
+
+        async def _file_get(conn, path):
+            try:
+                if path not in shown_files.get(conn.id, ()):
+                    raise PermissionError("not shown on this device")
+                for fr in file_frames(path):
+                    await conn.ws.send(json.dumps(fr))
+                log(f"[show] {os.path.basename(path)} saved by {bridge.name_of(conn.id)}")
+            except Exception as e:
+                log(f"[show] file not sent: {e!r}")
+                await conn.ws.send(json.dumps({"type": "file_chunk", "path": path, "last": True, "error": str(e)}))
 
         tag_timers: dict = {}     # device id -> the agent's <<timers>> countdowns
         pi_timers: list = []      # the Pi-held timers (backtalk.timer), as last read
@@ -1833,6 +1852,7 @@ async def amain():
                     await run_console("abort", sink)
             bridge.on_control = lambda conn, kind: asyncio.ensure_future(_control(conn, kind))
             bridge.on_heard = _heard
+            bridge.on_file_get = _file_get
             bridge.on_reopen = lambda conn, path: _show(path, bridge.make_sink(conn), button=False)
             bridge.on_text = lambda conn, t, spoken=False: hf_q.put_nowait(
                 (conn, t, "spoken" if spoken else True,
