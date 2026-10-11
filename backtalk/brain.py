@@ -44,6 +44,7 @@ never the character.
 import asyncio
 import os
 import re
+import sys
 import time
 import warnings
 from collections import deque
@@ -87,11 +88,14 @@ def _sentence_end(buf: str):
 # hand-off or an announcement carries a whole brief, and a recipe's steps
 # run long, so those get 4000 (a 1,100-character cook-with-me brief failed silently, 2026-10-09).
 _DIRECTION_TAG = re.compile(r"<<((?:session|announce|steps) [^<>]{1,4000}|[^<>]{1,600})>>")
-def _line(sink, text: str):
-    """The reply as text for the asking device's terminal (see web.py)."""
+def _line(sink, text: str, timing: str = ""):
+    """The reply as text for the asking device's terminal (see web.py).
+    `timing` ("heard 0.8s · first word 2.1s") is shown dim, never spoken;
+    it rides in "show" because the phone app relays only who, text, show."""
     send = getattr(sink, "send", None)
     if send is not None:
-        send({"type": "line", "who": "jarvis", "text": text})
+        send({"type": "line", "who": "jarvis", "text": text}
+             | ({"show": {"time": timing}} if timing else {}))
 
 
 FLUSH_AFTER = 0.75   # seconds of silence before a lone sentence is spoken,
@@ -149,7 +153,8 @@ class WarmBrain:
         # position guessed out of a queue.
         self._ask_queue: deque = deque()
         self._current_asker = None   # remote_sink owed the in-flight turn
-        self._ask_t0 = None          # when that turn's ask went out, for the log
+        self._ask_t0 = None          # when that turn's ask went out (see _timing)
+        self._heard = None           # its speech-to-text seconds, if spoken
         # Session usage, spoken on request ("usage report").
         self.session = {"turns": 0, "out_tokens": 0, "in_tokens": 0,
                         "cost": 0.0}
@@ -268,7 +273,7 @@ class WarmBrain:
         marker overrides this one (see signals.set_playing_conn)."""
         if self._turn_active or not self._ask_queue:
             return
-        utterance, remote_sink, self._ask_t0 = self._ask_queue.popleft()
+        utterance, remote_sink, self._ask_t0, self._heard = self._ask_queue.popleft()
         self._turn_active = True
         self._last_main = time.monotonic()
         self._dispatched = True
@@ -416,6 +421,18 @@ class WarmBrain:
         except Exception:
             pass
 
+    def _timing(self) -> str:
+        """The turn's first line's timing, once: speech-to-text time (a
+        spoken ask) and the ask going out to the first reply text; "" for
+        a turn nobody asked for (a background report)."""
+        if not self._ask_t0:
+            return ""
+        t = f"first word {time.time() - self._ask_t0:.1f}s"
+        if self._heard is not None:
+            t = f"heard {self._heard:.1f}s · " + t
+        self._ask_t0 = None
+        return t
+
     def ask(self, utterance: str, remote_sink=None, spoken: bool = False):
         """Queue an utterance (`spoken` matters only to brain_hermes.py). SENDING IS JUST SENDING: this does not
         wait for or return the reply — the reader speaks it, whoever's
@@ -433,7 +450,9 @@ class WarmBrain:
         already running, this just queues: the session never has two
         queries outstanding at once, so there's never ambiguity about
         which asker a turn belongs to later."""
-        self._ask_queue.append((utterance, remote_sink, time.time()))
+        ears = sys.modules.get("backtalk.ears")   # loaded = this process listens
+        self._ask_queue.append((utterance, remote_sink, time.time(),
+                                ears.take_heard() if ears else None))
         self._dispatch_next()
 
     async def capture(self, text: str, count_turn: bool = True) -> str:
@@ -589,13 +608,14 @@ class WarmBrain:
             if quiet:
                 # Text only: the asking device's terminal gets it, nothing
                 # is spoken; its tags still fire (see mouth._run).
+                timing = ""
                 if first:
                     turn_sink = self._current_asker or self.remote_sink
-                    self._ask_t0 = None
+                    timing = self._timing()
                     self.bus.static_stop()
-                log(f"[{self.label}] (quiet) {s}"
+                log(f"[{self.label}] (quiet) {f'({timing}) ' if timing else ''}{s}"
                     + (f"  <directions: {pending}>" if pending else ""))
-                _line(turn_sink, s)
+                _line(turn_sink, s, timing)
                 if pending:
                     self.mouth.say_chunk("", pending, turn_sink)
                 pending = []
@@ -618,14 +638,10 @@ class WarmBrain:
                         and not getattr(turn_sink, "conn_id", None):
                     turn_sink = None
                 turn_sink = turn_sink or self.remote_sink
-                # time from the ask going out to the first spoken sentence
-                # (a turn nobody asked for, a background report, has none)
-                lag = (f"({time.time() - self._ask_t0:.1f}s to first) "
-                       if self._ask_t0 else "")
-                self._ask_t0 = None
-                log(f"[{self.label}] {lag}{s}"
+                timing = self._timing()
+                log(f"[{self.label}] {f'({timing}) ' if timing else ''}{s}"
                     + (f"  <directions: {pending}>" if pending else ""))
-                _line(turn_sink, s)
+                _line(turn_sink, s, timing)
                 self.mouth.say_chunk(s, pending, turn_sink)
                 pending = []
                 first = False
