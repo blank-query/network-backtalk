@@ -1706,7 +1706,7 @@ async def amain():
             bridge.signals_dir = CFG["signals_dir"]
             who = CFG.get("peer_name") or NAME
             bridge.identity = {"type": "identity", "name": who, "color": CFG.get("identity_color") or "",
-                               "face": CFG.get("identity_face") or ""}
+                               "face": CFG.get("identity_face") or "", "hues": CFG.get("identity_hues") or {}}
             bridge.on_switch = lambda conn: mouth.say(CFG.get("identity_line") or f"{who} here.",
                                                       remote_sink=bridge.make_sink(conn))
             brain.remote_sink = bridge.make_broadcast_sink()

@@ -70,7 +70,7 @@ def assistant(cfg) -> dict:
     name = cfg.get("peer_name") or cfg["name"]
     return {"id": re.sub(r"\W+", "-", name.lower()).strip("-"), "name": name,
             "url": cfg.get("lan_url") or "", "color": cfg.get("identity_color") or "",
-            "face": cfg.get("identity_face") or ""}
+            "face": cfg.get("identity_face") or "", "hues": cfg.get("identity_hues") or {}}
 
 
 async def deliver(pi_url: str, peer_tok: str, me: str, device: str, frame: dict) -> bool:
