@@ -73,12 +73,12 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s")
 
 
 def _sentence_end(buf: str):
-    """The first sentence break that isn't inside an unfinished <<tag>>: an
-    announcement's text has full stops of its own, and splitting there
-    left the tag in pieces, spoken aloud instead of acted on."""
+    """The first sentence break that isn't inside an unfinished <<tag>> or
+    ![picture](path): an announcement's text has full stops of its own, and
+    splitting there left the tag in pieces, spoken aloud instead of acted on."""
     for m in _SENTENCE_END.finditer(buf):
         head = buf[:m.start()]
-        if head.count("<<") <= head.count(">>"):
+        if head.count("<<") <= head.count(">>") and head.rfind("![") <= head.rfind(")"):
             return m
     return None
 # <<anything>> is a stage direction: lifted out, never spoken, published on
