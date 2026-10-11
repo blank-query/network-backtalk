@@ -185,6 +185,8 @@ RATE = 16000   # must match ears.RATE, the fixed transcribe() contract
 # A tap's endpoint asks the client to release; past this the server ends
 # it itself (a phone waits up to 3.5 s for its own transcript first).
 ENDPOINT_WAIT_S = 6.0
+# A press whose frames stop this long (a client that died mid-press) ends.
+NO_AUDIO_S = 8.0
 CALL_VOICE_RMS = 500   # a caller frame this loud opens the call at the far end
 CALL_RING_S = 20       # the caller has this long to start talking
 
@@ -545,6 +547,9 @@ class BrowserBridge:
         never affected by it at all."""
         if conn.recording:
             log("[web] press ignored, this tab is already recording")
+            # ...and ended at the client, which would otherwise hold it
+            # (its reply paused) until the next tap
+            self._send(conn, {"type": "endpoint", "speech": False})
             return
         conn.recording = True
         conn.latched = conn.tap_dropped = False
@@ -782,7 +787,7 @@ class BrowserBridge:
         return await self._press_q.get()
 
     async def record_until_release(self, conn: Conn, abort=None,
-                                   on_audio=None) -> np.ndarray | None:
+                                   on_audio=None, max_s=120.0) -> np.ndarray | None:
         """Collect PCM frames until release, disconnect, or abort().
         `on_audio`, if given, also gets each 16 kHz chunk as it arrives
         (a streaming transcriber; see ears.Session).
@@ -793,7 +798,8 @@ class BrowserBridge:
         speech, or no speech at all, the client is told {"type":
         "endpoint", "speech": b} and sends its release as for a second
         tap (so a phone's own transcript still rides along); no speech
-        sets conn.tap_dropped and returns None."""
+        sets conn.tap_dropped and returns None. A press with no audio
+        for NO_AUDIO_S, or open for max_s, is ended as nothing heard."""
         from backtalk.ears import Endpoint
         frames: list[np.ndarray] = []
         ep, told = None, 0.0
@@ -804,9 +810,18 @@ class BrowserBridge:
         # (common: many browsers ignore the AudioContext sampleRate
         # request).
         resample_state = None
+        start = last = time.monotonic()
         try:
             while True:
+                now = time.monotonic()
+                if now - last > NO_AUDIO_S or now - start > max_s:
+                    log(f"[web] press {'got no audio' if now - last > NO_AUDIO_S else 'hit the cap'}"
+                        f" after {now - start:.0f}s, ending it as nothing heard")
+                    self._send(conn, {"type": "endpoint", "speech": False})
+                    return None
                 if abort and abort():
+                    # cut here (a mode switch): the client's press ends too
+                    self._send(conn, {"type": "endpoint", "speech": False})
                     return None
                 if conn._released.is_set() and conn._frames.empty():
                     break
@@ -819,6 +834,7 @@ class BrowserBridge:
                     continue
                 if chunk is None:   # disconnect sentinel
                     break
+                last = time.monotonic()
                 if len(chunk) < 4:
                     continue
                 rate = struct.unpack_from("<I", chunk, 0)[0]
