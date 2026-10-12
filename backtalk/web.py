@@ -161,7 +161,9 @@ Wire protocol, deliberately tiny:
                                              reply, which has no reply_done)
   DEVICE TOKENS: a hello with "device_token" (issued to one device by
   `python -m backtalk.grant`, kept here only as a hash) lets that device
-  in when require_token is on; a wrong one closes it (4401). Its hello
+  in when require_token is on; a wrong one closes it (4401, maybe
+  transient: the device keeps it), a revoked one (grant.py --revoke)
+  with 4403 "revoked", the only close that makes a device forget it. Its hello
   may carry "switched": true (the person just picked this assistant: it
   says who it is) and "push": true (no face server to poll: the bridge
   pushes {"type": "state", ...} as it changes).
@@ -421,6 +423,7 @@ class Conn:
         try:
             async for msg in self.ws:
                 if isinstance(msg, (bytes, bytearray)) and not self.authed:
+                    log(f"[web] refused {self.ws.remote_address[0]}: audio before hello")
                     await self.ws.close(4401, "token required")
                     return
                 if isinstance(msg, (bytes, bytearray)):
@@ -459,8 +462,10 @@ class Conn:
                         and data.get("device_token") is not None and not self.authed:
                     who = self.bridge.check_device_token(data["device_token"])
                     if who is None:
-                        log(f"[web] refused {self.ws.remote_address[0]}: wrong device token")
-                        await self.ws.close(4401, "wrong token")
+                        gone = self.bridge.device_token_revoked(data["device_token"])
+                        log(f"[web] refused {self.ws.remote_address[0]}: "
+                            + ("revoked device token" if gone else "wrong device token"))
+                        await self.ws.close(*((4403, "revoked") if gone else (4401, "wrong token")))
                         return
                     self.authed = True
                     log(f"[web] device token for {who} accepted")
@@ -670,6 +675,14 @@ class BrowserBridge:
         except (OSError, TypeError, ValueError):
             return None
         return str(entry.get("device") or "device") if isinstance(entry, dict) else None
+
+    def device_token_revoked(self, tok) -> bool:
+        """grant.py --revoke took this token back (its hash kept under "revoked")."""
+        try:
+            with open(self.tokens_file) as f:
+                return hashlib.sha256(str(tok).encode()).hexdigest() in (json.load(f).get("revoked") or {})
+        except (OSError, TypeError, ValueError, AttributeError):
+            return False
 
     def deliver(self, peer: Conn, data: dict) -> bool:
         """A peer passes a grant to one of this bridge's devices (it is
