@@ -1,7 +1,12 @@
 # Run: .venv/bin/python tests/check_barge_in.py
 # Self-check: hands-free speech over a reply stops it only for a stop
 # command (anyone) or exactly one enrolled voice.
-import os, sys
+import json, os, sys, tempfile
+tmp = tempfile.mkdtemp(prefix="bt-barge-")    # its own config: the phrases below say "Jarvis"
+with open(os.path.join(tmp, "backtalk.json"), "w") as f:
+    json.dump({"agent_dir": tmp, "signals_dir": tmp, "name": "Jarvis"}, f)
+os.environ.update(BACKTALK_CONFIG=os.path.join(tmp, "backtalk.json"),
+                  BACKTALK_LOG=os.path.join(tmp, "backtalk.log"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from backtalk.main import barges_in
 

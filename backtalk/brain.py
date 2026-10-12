@@ -199,6 +199,9 @@ class WarmBrain:
         # Set when input from another device joined the running turn
         # (brain_hermes.py's steer): its rest goes to _current_asker.
         self._widen_turn = False
+        # main.py: (the sink a turn nobody asked for would speak to) ->
+        # why it must wait, or None (main.hold_reason). See _wait_hold.
+        self.hold = None
 
     async def start(self):
         mode = CFG["permission_mode"]
@@ -349,6 +352,25 @@ class WarmBrain:
             log("[brain] turn aborted (SDK interrupt)")
         except Exception as e:
             log(f"[brain] abort interrupt failed: {e!r}")
+
+    async def _wait_hold(self):
+        """A turn nobody asked for (a helper finishing, a task notification)
+        waits, before its first words, while the abort menu is open or sir
+        is talking into its device (2026-10-11: a helper's report talked
+        over both). Only its speech waits: the CLI started the turn itself.
+        A stop meanwhile (abort everything, the Interrupt button) drops it."""
+        held = None
+        while not self._discard_until_result:
+            why = self.hold(_pin(self.remote_sink))
+            if not why:
+                break
+            if why != held:
+                log(f"[turn] background turn held: {why}")
+                held = why
+            self._last_main = time.monotonic()    # held, not stuck
+            await asyncio.sleep(0.2)
+        if held:
+            log("[turn] background turn released")
 
     def _start_reader(self):
         self._reader_task = asyncio.ensure_future(self._read_forever())
@@ -814,6 +836,9 @@ class WarmBrain:
                         self._dispatch_next()   # asks queued behind it
                     continue
 
+                if first and self.hold and t == "StreamEvent" \
+                        and self._current_asker is None and not self._ask_t0:
+                    await self._wait_hold()
                 if t == "StreamEvent":
                     self._turn_active = True
                     if self._discard_until_result:
