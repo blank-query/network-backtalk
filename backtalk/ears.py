@@ -44,6 +44,10 @@ RATE = 16000
 FRAME_MS = 30
 FRAME_LEN = RATE * FRAME_MS // 1000  # samples per frame
 OPEN_FRAMES = 4        # ~120ms speech to open an utterance
+# Open-mic pre-roll: frames kept from before an utterance opens (600 ms,
+# ~480 ms ahead of the OPEN_FRAMES trigger). 8 lost the "Jar-" of a quiet
+# "Jarvis, stop" over a reply, where the detector fires late (2026-10-12).
+PRE_ROLL = 20
 MAX_UTTER_S = 30
 # The open mic decides "still talking" with Silero, a neural speech
 # detector (already here for faster-whisper), not webrtcvad: webrtcvad
@@ -438,6 +442,33 @@ def transcribe(pcm: np.ndarray, vad: bool = False) -> str:
     return _NONSPEECH.sub("", text).strip()
 
 
+_reread = None          # the second-read Whisper model (moonshine setups only)
+
+
+def reread(pcm: np.ndarray, name: str) -> str | None:
+    """A second, whole-clip read with Whisper (stt_model, CPU, 4 threads),
+    for talk-over whose streaming Moonshine pass has no name in it: on
+    quiet echo-cancelled clips Moonshine missed a "Jarvis" that Whisper
+    heard (2026-10-12). The name is the only hotword and there is no
+    temperature fallback: stt_hotwords leaked into near-silent clips
+    ("Jarvis piNAS" for a 30 s sentence) and the fallback took up to 5 s.
+    None when the first pass was Whisper already (a second read would
+    only repeat it). Loaded on first use."""
+    global _reread
+    if _moonshine() is None or not len(pcm):
+        return None
+    with _model_lock:
+        if _reread is None:
+            from faster_whisper import WhisperModel
+            _reread = WhisperModel(CFG["stt_model"], device="cpu",
+                                   compute_type=CFG["stt_compute"], cpu_threads=4)
+    segments, _ = _reread.transcribe(
+        pcm.astype(np.float32) / 32768.0, beam_size=1, temperature=0.0,
+        language="en" if CFG["stt_model"].endswith(".en") else None,
+        condition_on_previous_text=False, hotwords=name)
+    return _NONSPEECH.sub("", "".join(s.text for s in segments)).strip()
+
+
 # ---- Moonshine (stt_engine "moonshine"): one model, one stream per capture.
 # The last utterance's speech-to-text time, [when, seconds]: brain.ask
 # takes it for the reply's timing tag in the terminal (see take_heard).
@@ -710,7 +741,7 @@ class Ears:
                     is_speech = _speechy(self.vad, sp, mono)
                     if not in_utterance:
                         ring.append(mono)
-                        if len(ring) > 8:
+                        if len(ring) > PRE_ROLL:
                             ring.pop(0)
                         speech_run = speech_run + 1 if is_speech else 0
                         if speech_run >= OPEN_FRAMES:
