@@ -140,13 +140,20 @@ async def main():
         def __init__(s): s.got = []
         def write(s, pcm): s.got.append(int(pcm[0])); time.sleep(0.01)
     out = Out()
-    m = M.Mouth(bus=Bus())
+    states = []
+
+    class StateBus(Bus):
+        def set_state(s, name): states.append(name)
+    m = M.Mouth(bus=StateBus())
     m._get_out = lambda rate: out
     m.pause()
     m.say("One sentence.")
     await asyncio.sleep(0.3)
     assert out.got == [], f"played while paused: {out.got}"
+    assert "speaking" not in states, "speaking before any audio went out"
     m.resume()
+    await asyncio.sleep(0.05)
+    assert states[:1] == ["speaking"], f"speaking must mark the first audio: {states}"
     await asyncio.sleep(0.5)
     assert out.got == [1, 2, 3, 4, 5, 6], f"lost or reordered audio: {out.got}"
     out.got.clear()
