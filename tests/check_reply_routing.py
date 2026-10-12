@@ -9,7 +9,7 @@
 # phone's WatchRelay opens it), desk unit, this machine's face, the laptop
 # Claude, the terminal chat, and a peer; the real brain reader, fed by a
 # fake SDK stream.
-import asyncio, json, os, sys, tempfile
+import asyncio, inspect, json, os, sys, tempfile
 tmp = tempfile.mkdtemp(prefix="bt-routing-")
 PORT = 18797
 with open(os.path.join(tmp, "backtalk.json"), "w") as f:
@@ -130,13 +130,16 @@ async def main():
         await asyncio.sleep(0.2)
         return await drain()
 
+    # builds without the face mirror (the Pi's) send the face nothing
+    mirror_on = "mirror" in inspect.signature(BrowserBridge.make_sink).parameters
+
     def only(got, who, text, mirror=True):
         """`who` got the reply's audio, words and turn_done; the face only the
         words (the mirror); nobody else anything."""
         for k, (a, lines, done) in got.items():
             if k == who:
                 assert a == 1 and lines == [text] and done == 1, (k, got)
-            elif k == "face" and mirror and who not in ("face", "peer"):
+            elif k == "face" and mirror and mirror_on and who not in ("face", "peer"):
                 assert a == 0 and lines == [text] and done == 0, (k, got)
             else:
                 assert a == 0 and lines == [] and done == 0, (k, got)
