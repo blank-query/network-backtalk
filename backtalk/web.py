@@ -198,7 +198,15 @@ Wire protocol, deliberately tiny:
   [names]}. {"type": "caps", "caps"} from a device updates its entry
   (its role changed). A device whose devices.json entry has "role" is sent
   {"type": "role", "role"} on hello; the app gates every action by it
-  (raising it needs a tap on the device).
+  (raising it needs a tap on the device). A phone_result marked
+  "private" (what a device read back: notifications, contacts) is logged
+  by length only, and a device action's log line names its fields, never
+  their values. WAKE WORD (the Kitchen trial): an entry with "wake"
+  (true, or {"on", "quiet": "22-7", "threshold"}) is sent {"type":
+  "wake", "cfg"} on hello; the app's caps then carry "wake" (on, quiet,
+  muted). A tap its wake word opened sends {"type": "latch", "wake":
+  true}, so its words count as said after the name ("stop listening"
+  alone mutes it: main.py answers {"type": "wake", "muted": b}).
   text frame  {"type": "listen", "on": b,   server -> browser: hands-
                "muted": b}
                                              free on or off for that
@@ -385,6 +393,7 @@ class Conn:
         self.recording = False   # this tab's own slot, not bridge-wide
         self.latched = False     # this press is a tap: it ends on silence (latch)
         self.tap_dropped = False # ...and nobody spoke into it
+        self.wake = False        # ...and its wake word opened it (the name was said)
         self.listening = False   # hands-free: frames outside a press
         self.listen_muted = False   # paused: hearing only "start listening"
         self.call: Call | None = None   # an intercom call: audio relays, untranscribed
@@ -489,6 +498,12 @@ class Conn:
                     role = self.bridge.devices().get(self.id, {}).get("role")
                     if role and not self.peer:
                         await self.ws.send(json.dumps({"type": "role", "role": role}))
+                    # the wake word trial: devices.json "wake" (true, or
+                    # {"on", "quiet": "22-7", "threshold"}); the app runs it
+                    # only on a room device (role shared)
+                    wake = self.bridge.devices().get(self.id, {}).get("wake")
+                    if wake is not None and not self.peer:
+                        await self.ws.send(json.dumps({"type": "wake", "cfg": wake if isinstance(wake, dict) else {"on": bool(wake)}}))
                     self.bridge.offer_update(self, data.get("version"))
                     if self.bridge._lines.get(self.id):
                         await self.ws.send(json.dumps(
@@ -550,12 +565,14 @@ class Conn:
                 elif kind in ("interrupt", "abort") and self.bridge.on_control is not None:
                     self.bridge.on_control(self, kind)
                 elif kind == "press":
+                    self.wake = False
                     self.bridge._on_press(self, interrupt=False)
                 elif kind == "interrupt_press":
                     self.bridge._on_press(self, interrupt=True)
                 elif kind == "latch" and self.recording:
                     # the press was a tap: end it on silence like hands-free
                     self.latched = True
+                    self.wake = bool(data.get("wake"))
                 elif kind == "release":
                     # the phone's own transcript of this press, if it made
                     # one (on-device recognition fed the same audio)
@@ -571,10 +588,12 @@ class Conn:
                                               muted=bool(data.get("muted")))
                 elif kind == "phone_result" and data.get("id") is not None:
                     fut = self.bridge._waiting.pop(str(data["id"]), None)
+                    if data.get("private"):     # what was read (notifications): never logged
+                        self.bridge._private[str(data["id"])] = True
                     if fut is not None and not fut.done():
                         fut.set_result(str(data.get("text") or "done"))
                 elif kind == "phone_result" and self.bridge.on_phone_result is not None:
-                    self.bridge.on_phone_result(self, str(data.get("text") or ""))
+                    self.bridge.on_phone_result(self, str(data.get("text") or ""), bool(data.get("private")))
                 elif kind == "image" and self.bridge.on_image is not None:
                     try:
                         self.bridge.on_image(self, base64.b64decode(data.get("data") or ""))
@@ -622,7 +641,7 @@ class BrowserBridge:
         self.on_listen = None   # main.py: start a listener for a Conn
         self.on_image = None    # main.py: (Conn, jpeg bytes), a shared picture
         self.on_file = None     # main.py: (Conn, name, mime, bytes), any other shared file
-        self.on_phone_result = None   # main.py: (Conn, text) from a phone command
+        self.on_phone_result = None   # main.py: (Conn, text, private) from a phone command
         self.devices_file = None      # main.py: the device names (see saw)
         self.update_dir = None        # main.py: where a newer app waits (see offer_update)
         self.on_text = None           # main.py: (Conn, text) typed in the terminal
@@ -654,6 +673,7 @@ class BrowserBridge:
         self._cook: dict[str, dict] = {}    # device id -> its cooking steps frame
         self._tasks = None                  # the last tasks frame sent
         self._waiting: dict[str, asyncio.Future] = {}   # device actions by id (device_call)
+        self._private: dict[str, bool] = {}   # ...whose answer the device marked private
         self._next_id = 0
         # The devices sir last spoke or typed on, newest first (None: this
         # machine's own key); see used() and pin().
@@ -751,6 +771,7 @@ class BrowserBridge:
         numbered phone frame, its answer back to the peer."""
         name, frame = str(data.get("device") or ""), data.get("frame")
         conn = self.find(name)
+        rid = None
         if not isinstance(frame, dict) or not frame.get("do"):
             ok, text = False, "the frame needs a \"do\""
         elif conn is None:
@@ -762,14 +783,16 @@ class BrowserBridge:
             rid = str(self._next_id)
             fut = self._waiting[rid] = asyncio.get_running_loop().create_future()
             self._send(conn, {**frame, "type": "phone", "id": rid})
-            log(f"[device] {peer.peer} -> {name}: {json.dumps(frame)[:200]}")
+            # the action and its fields' names only: a reply's text never lands in the log
+            log(f"[device] {peer.peer} -> {name}: {frame.get('do')} ({', '.join(k for k in frame if k != 'do')})")
             try:
                 ok, text = True, await asyncio.wait_for(fut, DEVICE_WAIT_S)
             except asyncio.TimeoutError:
                 ok, text = False, f"no answer from {name!r} in {DEVICE_WAIT_S} s"
             finally:
                 self._waiting.pop(rid, None)
-        log(f"[device] {name}: {'ok' if ok else 'failed'}: {text[:200]}")
+        log(f"[device] {name}: {'ok' if ok else 'failed'}: "
+            + (f"({len(text)} chars, private)" if self._private.pop(rid, False) else text[:200]))
         try:
             await peer.ws.send(json.dumps({"type": "device_result", "ok": ok, "text": text}))
         except Exception:
