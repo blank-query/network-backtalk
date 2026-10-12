@@ -460,10 +460,12 @@ def says_name(text):
 
 def barges_in(text, heard):
     """Hands-free speech over a reply stops it, like the Interrupt
-    button (sir, 2026-10-10), when it's a stop command from anyone, or
-    exactly one enrolled voice is heard. Two voices (people talking to
-    each other) or only unknown ones: the reply carries on."""
-    return console_match(text) in ("stop", "abort") or len(heard) == 1
+    button, only when it says the name (sir, 2026-10-11, after the first
+    real cook: kitchen noise transcribed with ma'am's voiceprint, or her
+    answering mid-reply, cut replies off). Anything else queues behind
+    the reply, which plays on. `heard` (the enrolled voices) no longer
+    decides; kept for the log line."""
+    return says_name(text)
 
 
 ABORT_WAIT_S = 30      # how long the abort's question waits for its answer, then cancels quietly

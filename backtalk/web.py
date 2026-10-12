@@ -616,6 +616,11 @@ class Conn:
             pass
         finally:
             self.disconnected = True
+            # a device dropping mid-reply loses the rest of it: logged, so
+            # a "it just stopped talking" report can be checked
+            if self.id and not self.peer and not getattr(self, "face", False):
+                log(f"[web] {self.bridge.name_of(self.id) or str(self.id)[:8]} disconnected"
+                    f" ({getattr(self.ws, 'close_code', None)})")
             self.bridge.peer_gone(self)
             if self.call is not None:
                 self.bridge.end_call(self.call, "disconnected")
