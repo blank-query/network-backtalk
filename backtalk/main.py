@@ -430,6 +430,25 @@ def console_match(text):
     return None
 
 
+def wake_mute(verb, wake):
+    """A wake-word device out of hands-free (its caps' "wake": on, quiet,
+    or muted): "stop listening" mutes the wake word (True), "start
+    listening" unmutes a muted one (False); None: not a wake-word matter."""
+    if verb == "micmute" and wake in ("on", "quiet"):
+        return True
+    if verb == "micopen" and wake == "muted":
+        return False
+    return None
+
+
+def wake_text(text):
+    """Words heard after the wake word: the name was said, so a console
+    phrase counts without it ("Hey Jarvis" ... "stop listening")."""
+    if console_match(text) is None and console_match(f"{NAME}, {text}"):
+        return f"{NAME}, {text}"
+    return text
+
+
 def says_name(text):
     """The agent's name anywhere in the text, close mishearings ("Javi")
     included."""
@@ -913,7 +932,13 @@ async def amain():
                               await brain.context_usage()))
         elif verb in ("micopen", "micptt", "micmute") and conn is not None:
             resp = ""
-            if verb == "micopen" and conn.listening and not conn.listen_muted:
+            wm = None if conn.listening else wake_mute(
+                verb, ((bridge.devices().get(conn.id) or {}).get("caps") or {}).get("wake"))
+            if wm is not None:
+                bridge._send(conn, {"type": "wake", "muted": wm})
+                say("Wake word off. Tap the light to bring it back." if wm
+                    else "Listening for my name again.")
+            elif verb == "micopen" and conn.listening and not conn.listen_muted:
                 say("Already listening on this device.")
             elif verb == "micopen":
                 bridge.set_listening(conn, True)
@@ -1757,11 +1782,12 @@ async def amain():
             sink.reply_done()
             log(f"[announce] to {bridge.name_of(conn.id)}: {text[:120]}")
 
-        def _on_phone_result(conn, text: str):
+        def _on_phone_result(conn, text: str, private: bool = False):
             """A phone command's outcome the agent needs (a failure, a
             contact lookup): asked as that device's turn, so the answer
             goes back there."""
-            log(f"[phone] result from {str(conn.id)[:8]}: {text[:200]}")
+            log(f"[phone] result from {str(conn.id)[:8]}: "
+                + (f"({len(text)} chars, private)" if private else text[:200]))
             brain_for(conn).bus.set_state("thinking")
             brain_for(conn).ask(f"[The phone reports back on your last command: {text}]",
                       remote_sink=bridge.make_sink(conn))
@@ -2242,6 +2268,8 @@ async def amain():
                     except Exception:
                         pass
                     continue
+                if conn.wake:
+                    text = wake_text(text)
                 await handle(text, spoke_from=press_t,
                             interrupt=is_interrupt,
                             remote_sink=bridge.make_sink(conn), who=who)
