@@ -23,11 +23,13 @@ name and print what came of it, inside the same turn.
                                        role and actions (from its hello)
 
 The action goes down the device's own socket through this machine's
-bridge (numbered, web.py's DEVICE ACTIONS); the device answers when it's
-done. The device enforces its role and confirmation rules itself: a read
-or a send asked this way shows a confirm card there and waits up to 90 s
-for a tap. Exit 1 when the device isn't connected, its app is too old,
-or no answer comes.
+bridge (numbered, web.py's DEVICE ACTIONS, so the frame may not carry its
+own "id"); the device answers when it's done. The device enforces its role
+and confirmation rules itself: on sir's phone (role full) nothing needs a
+tap, so the assistant reads back each send and acts only on his spoken yes;
+elsewhere a read or a send asked this way shows a confirm card there and
+waits up to 90 s for a tap. Exit 1 when the device isn't connected, its app
+is too old, or no answer comes.
 """
 import asyncio
 import json
