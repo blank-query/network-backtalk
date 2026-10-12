@@ -33,6 +33,7 @@ Event mapping (tui_gateway/contracts/events.py):
   tool.generating / tool.start  -> the text block ends (pre-tool speech plays now)
   subagent.start / .complete    -> TaskStarted / TaskNotification (satellites)
   message.complete              -> ResultMessage (turn over; usage; resume id)
+  status.update / session.usage -> Heartbeat (keeps the stuck-turn watchdog off)
 
 Config ("hermes" in backtalk.json):
   home     the Hermes profile dir (HERMES_HOME), e.g. ~/.hermes/profiles/friday
@@ -90,6 +91,10 @@ class _ToolUse:          # a tool call in flight, for the stuck-turn watchdog
 class _ToolResult:
     def __init__(self, tool_use_id):
         self.tool_use_id = tool_use_id
+
+
+class Heartbeat:         # a "still working" status: main-turn activity for the watchdog
+    pass
 
 
 class ResultMessage:
@@ -288,8 +293,11 @@ class HermesClient:
                 self.stored_id, None))
         elif kind == "error":
             log(f"[brain] hermes error: {p.get('message', '')[:200]}")
-        elif kind == "status.update" and p.get("kind") in ("compacting", "lifecycle"):
-            log(f"[brain] hermes {p.get('kind')}: {p.get('text', '')[:120]}")
+        elif kind in ("status.update", "session.usage"):
+            # a compaction can run minutes with only these (Friday, 2026-10-11)
+            self._q.put_nowait(Heartbeat())
+            if p.get("kind") in ("compacting", "lifecycle"):
+                log(f"[brain] hermes {p.get('kind')}: {p.get('text', '')[:120]}")
 
     # -- the SDK client surface --------------------------------------------
     async def query(self, text: str):

@@ -33,7 +33,7 @@ helper = [StreamEvent(uuid="u", session_id="s", parent_tool_use_id=P,
           UserMessage(content="tool result", parent_tool_use_id=P)]
 
 async def main():
-    b = B.WarmBrain(mouth=Mouth(), bus=Bus())
+    b = B.WarmBrain(mouth=Mouth(), bus=Bus(), persist=False)   # never touch the live session pointer
     b._client = c = Client(); b._start_reader()
     for m in helper: c.q.put_nowait(m)
     await asyncio.sleep(1.2)
@@ -59,7 +59,13 @@ async def main():
     await asyncio.sleep(0.05)
     b._active_tasks, b._last_main = {"task1"}, 0.0
     assert not b._release_if_stuck() and b.turn_active, "a running background task was released"
+    # a Hermes compaction: only status lines for minutes (Friday, 2026-10-11)
     b._active_tasks, b._last_main = set(), 0.0
+    from backtalk.brain_hermes import Heartbeat
+    c.q.put_nowait(Heartbeat())
+    await asyncio.sleep(0.05)
+    assert not b._release_if_stuck() and b.turn_active, "a compacting Hermes turn was released"
+    b._last_main = 0.0
     assert b._release_if_stuck(), "silent turn with nothing running not released"
     # a barge-in mid-reply (13:09:17): no SDK interrupt, output dropped,
     # the new ask goes out when the cut-off turn ends

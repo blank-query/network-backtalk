@@ -12,6 +12,7 @@ c.sid, c.stored_id = "live", "stored-1"
 for kind, p in [("message.start", {}), ("reasoning.delta", {"text": "hmm"}), ("reasoning.delta", {"text": ""}),
                 ("message.delta", {"text": "Let me check. "}), ("tool.generating", {"name": "terminal"}),
                 ("tool.start", {"tool_id": "t1", "name": "terminal"}), ("tool.complete", {"tool_id": "t1"}), ("message.delta", {"text": "Done."}),
+                ("status.update", {"kind": "compacting", "text": "still summarizing"}),
                 ("subagent.start", {"subagent_id": "s1", "goal": "g", "task_count": 1, "task_index": 0}),
                 ("subagent.complete", {"subagent_id": "s1", "goal": "g", "task_count": 1, "task_index": 0, "status": "error"}),
                 ("message.complete", {"text": "Let me check. Done.", "usage": {"input": 120, "output": 30}}),
@@ -25,7 +26,7 @@ while not c._q.empty():
 assert out == ["message_start:", "content_block_start:thinking", "content_block_delta:thinking_delta",
                "content_block_stop:", "content_block_start:text", "content_block_delta:text_delta",
                "content_block_stop:", "content_block_start:tool_use", "content_block_stop:", "AssistantMessage", "UserMessage",
-               "content_block_start:text", "content_block_delta:text_delta",
+               "content_block_start:text", "content_block_delta:text_delta", "Heartbeat",
                "TaskStartedMessage", "TaskNotificationMessage",
                "content_block_stop:", "AssistantMessage", "ResultMessage", "AssistantMessage", "ResultMessage"], out
 
