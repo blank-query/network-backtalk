@@ -859,38 +859,46 @@ class BrowserBridge:
                 self._send(c, frame)
 
     def bus_state(self, conn_id) -> dict:
-        """The face's state, as the face server's /state has it (shared bus
-        only, plus this device's timers).
-        ponytail: a device owned by a dedicated session shows the main
-        session's state here; read .voice_devices' entry if one ever does."""
+        """The face's state, as the face server's /state?device= has it: the
+        shared bus, or this device's own entry while a dedicated session
+        (cook-with-me) owns it, plus this device's timers."""
         def read(name, default=""):
             try:
                 with open(os.path.join(self.signals_dir, name)) as f:
                     return f.read().strip()
             except (OSError, TypeError):
                 return default
-        state = read(".voice_state", "idle").lower()
+        try:
+            dev = json.loads(read(".voice_devices", "{}")).get(conn_id) or {}
+            dev = dev if isinstance(dev, dict) else {}
+        except (ValueError, AttributeError):
+            dev = {}
+        owned = bool(dev.get("owned"))
+        state = str(dev.get("state") or "idle") if owned else read(".voice_state", "idle").lower()
+        wave, wave_ts = (dev.get("samples"), dev.get("wave_ts")) if owned else (None, None)
+        if not owned:
+            try:
+                w = json.loads(read(".voice_waveform", "{}"))
+                wave, wave_ts = w.get("samples"), w.get("ts")
+            except (ValueError, AttributeError):
+                pass
         samples, level = [0.0] * 64, 0.0
         try:
-            w = json.loads(read(".voice_waveform", "{}"))
-            if w.get("samples") and time.time() - float(w.get("ts", 0)) < 0.6:
-                state, samples = "speaking", [float(x) for x in w["samples"][:64]]
+            if wave and time.time() - float(wave_ts or 0) < 0.6:
+                state, samples = "speaking", [float(x) for x in wave[:64]]
                 level = min(1.0, sum(abs(x) for x in samples) / len(samples) / 3000.0)
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError):
             pass
-        try:
-            timers = json.loads(read(".voice_devices", "{}")).get(conn_id, {}).get("timers") or []
-        except (ValueError, AttributeError):
-            timers = []
-        tasks = read(".voice_tasks", "0")
+        timers = dev.get("timers") or []
+        tasks = str(dev.get("tasks") or 0) if owned else read(".voice_tasks", "0")
         try:
             speed = json.loads(read(".voice_speed", "{}"))
         except ValueError:
             speed = {}
         return {"type": "state", "state": state, "level": level, "samples": samples, "speed": speed,
-                "loading": os.path.exists(os.path.join(self.signals_dir or "", ".voice_loading_pid")),
+                "loading": not owned and os.path.exists(os.path.join(self.signals_dir or "", ".voice_loading_pid")),
                 "tasks": int(tasks) if tasks.isdigit() else 0,
-                "active_conn": read(".voice_active_conn"), "timers": timers}
+                "active_conn": conn_id if owned else read(".voice_active_conn"), "timers": timers}
 
     async def _push_watch(self):
         """Tasks to every device when they change (polled each second, so
