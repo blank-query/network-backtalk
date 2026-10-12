@@ -564,6 +564,14 @@ class Mouth:
                 if self._q.empty() and self._speaking.is_set():
                     self._reply_finished(remote_sink)
                 continue
+            if self._muted_for(remote_sink):
+                # a text-only asker: no synthesis; the text already went
+                # out, the directions still fire
+                if directions:
+                    _fire_directions(directions, remote_sink, _phone_frames(directions), self.bus)
+                if self._q.empty():
+                    self._reply_finished(remote_sink)
+                continue
             self._stop.clear()
             self._speaking.set()
             self.ducker.speech_start()
@@ -574,6 +582,14 @@ class Mouth:
             finally:
                 if self._q.empty():
                     self._reply_finished(remote_sink)
+
+    def _muted_for(self, remote_sink) -> bool:
+        """Nobody would hear this audio, so synthesize none: the asker
+        plays no audio (its hello said "audio": false, the terminal chat)
+        and this machine's speakers won't play it either."""
+        conn = getattr(remote_sink, "conn", None)
+        return remote_sink is not None and getattr(conn, "audio", True) is False and not (
+            self.local and bool(CFG.get("web", {}).get("local_playback_on_remote_turn", True)))
 
     def _reply_finished(self, remote_sink):
         """The reply has genuinely stopped talking, as opposed to the gap

@@ -391,6 +391,7 @@ class Conn:
         self.rid = None       # ...under this relay id
         self.peer_link = None # the name this peer's outbound link serves (a hello's "link")
         self.authed = True    # False: refused unless the first frame is a peer hello
+        self.audio = True     # False: plays no audio (a hello's "audio": false, the terminal chat)
         self.disconnected = False
         self.recording = False   # this tab's own slot, not bridge-wide
         self.latched = False     # this press is a tap: it ends on silence (latch)
@@ -496,6 +497,7 @@ class Conn:
                         continue
                 if kind == "hello":
                     self.id = data.get("device_id") or self.id
+                    self.audio = data.get("audio") is not False
                     self.bridge.saw(self, self.peer or data.get("model"), data.get("caps"))
                     role = self.bridge.devices().get(self.id, {}).get("role")
                     if role and not self.peer:
@@ -1351,6 +1353,8 @@ class BrowserBridge:
                 self.voice_until[conn.id] = time.monotonic() + len(pcm) / rate + 0.3
             if c.call is not None and c.call.open:
                 self.overlay_add(c, rate, pcm)     # mixed into the call
+                return
+            if not c.audio:
                 return
             try:
                 frame = struct.pack("<I", rate) + pcm.tobytes()
