@@ -771,7 +771,7 @@ class WarmBrain:
                     # it never sends a ResultMessage to end one.
                     self._release_if_stuck()
                     continue
-                if t in ("StreamEvent", "AssistantMessage", "UserMessage") \
+                if t in ("StreamEvent", "AssistantMessage", "UserMessage", "Heartbeat") \
                         or not self._turn_active and getattr(msg, "subtype", None) == "init":
                     self._last_main = time.monotonic()
                 if t in ("AssistantMessage", "UserMessage") \
