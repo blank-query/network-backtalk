@@ -254,6 +254,8 @@ RATE = 16000   # must match ears.RATE — the fixed transcribe() contract
 ENDPOINT_WAIT_S = 6.0
 # A press whose frames stop this long (a client that died mid-press) ends.
 NO_AUDIO_S = 8.0
+# Device ids of agent channels, not a person's device (see BrowserBridge.used)
+AGENT_IDS = ("terminal-", "claude-")
 CALL_VOICE_RMS = 500   # a caller frame this loud opens the call at the far end
 CALL_RING_S = 20       # the caller has this long to start talking
 DEVICE_WAIT_S = 120    # a device action's answer (a confirm card waits 90 s for a tap)
@@ -653,6 +655,65 @@ class BrowserBridge:
         self._tasks = None                  # the last tasks frame sent
         self._waiting: dict[str, asyncio.Future] = {}   # device actions by id (device_call)
         self._next_id = 0
+        # The devices sir last spoke or typed on, newest first (None: this
+        # machine's own key); see used() and pin().
+        self._recent: list = []
+
+    # ---- where a turn nobody asked for goes (a helper finishing, a task
+    # notification): the device sir last used, never every device
+
+    def used(self, sink):
+        """sir just spoke or typed through this sink (None: this machine's
+        own key or mic). Agent channels never count: peers, the laptop
+        Claude's jarvis-ask, and the desktop terminal-chat (device ids
+        starting AGENT_IDS)."""
+        conn = getattr(sink, "conn", None)
+        if conn is not None and (conn.peer or str(conn.id).startswith(AGENT_IDS)):
+            return
+        # ponytail: one history for everyone; key it by person (devices.json
+        # owner, the voiceprint) once ma'am's devices shouldn't take sir's reports
+        key = conn.id if conn is not None else None
+        self._recent = [conn] + [c for c in self._recent
+                                 if (c.id if c is not None else None) != key][:7]
+
+    def pin(self):
+        """The sink a background turn speaks to, chosen once for the whole
+        turn: the most recently used device still connected (not one a
+        dedicated session owns); none connected, the last one (its lines
+        wait for its reconnect, see make_sink); never used, None (this
+        machine's own speakers)."""
+        for c in self._recent:
+            if c is None:
+                return None
+            live = next((x for x in list(self._conns) if x.id == c.id
+                         and not x.disconnected and x.id not in self.owned), None)
+            if live is not None:
+                return self.make_sink(live)
+        return self.make_sink(self._recent[0]) if self._recent else None
+
+    def make_recent_sink(self):
+        """brain.remote_sink, the fallback for a turn nobody asked for. The
+        brain pins it per turn (pin); used unpinned, each call goes to
+        pin()'s device. A stop still reaches every device, so an
+        interrupt silences whatever is playing."""
+        every = self.make_broadcast_sink()
+
+        def _sink(rate: int, pcm: np.ndarray):
+            s = self.pin()
+            if s is not None:
+                s(rate, pcm)
+
+        def _call(name):
+            def f(*a):
+                s = self.pin()
+                if s is not None:
+                    getattr(s, name)(*a)
+            return f
+        _sink.reply_done = _call("reply_done")
+        _sink.send = _call("send")
+        _sink.stop = every.stop
+        _sink.pin = self.pin
+        return _sink
 
     # ---- device tokens (see grant.py): hashes only, read fresh each
     # time, so a revoke applies at the next connect
@@ -1289,12 +1350,10 @@ class BrowserBridge:
         return _sink
 
     def make_broadcast_sink(self):
-        """A (rate, pcm) -> None closure for turns nobody specific
-        asked for (background reports) or where there's no one
-        connection to prefer: sends to every tab connected AT SEND
-        TIME, built fresh from self._conns each call so a tab
-        connecting or disconnecting mid-reply needs no bookkeeping
-        here."""
+        """A (rate, pcm) -> None closure for every device connected AT
+        SEND TIME (built fresh from self._conns each call). Only an
+        interrupt's stop uses it now: a turn nobody asked for goes to one
+        device (make_recent_sink)."""
         def conns():
             return [c for c in list(self._conns) if c.id not in self.owned and c.peer is None]
 

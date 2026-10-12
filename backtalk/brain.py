@@ -98,6 +98,12 @@ def _line(sink, text: str, timing: str = ""):
              | ({"show": {"time": timing}} if timing else {}))
 
 
+def _pin(sink):
+    """A recent sink (web.py's make_recent_sink) fixed to one device for a
+    whole turn; any other sink as it is."""
+    return sink.pin() if hasattr(sink, "pin") else sink
+
+
 FLUSH_AFTER = 0.75   # seconds of silence before a lone sentence is spoken,
                      # see the Backtalk Orphaned Sentence Bug note
 
@@ -137,11 +143,11 @@ class WarmBrain:
         # thinking, not idle. A turn being discarded doesn't count.
         if mouth is not None:
             mouth.busy = lambda: self._turn_active and not self._discard_until_result
-        # Fallback sink for a turn nobody specific asked for (a
-        # background report); main.py sets this once to a broadcast
-        # sink reaching every connected browser. A turn that WAS asked
-        # by a specific connection routes to that connection instead,
-        # via _current_asker below.
+        # Fallback sink for a turn nobody specific asked for (a helper
+        # finishing, a task notification): main.py sets it to the bridge's
+        # recent sink, pinned once per turn to the device sir last used
+        # (web.py's pin). A turn that WAS asked by a specific connection
+        # routes to that connection instead, via _current_asker below.
         self.remote_sink = None
         # Utterances not yet sent to the SDK: (utterance, remote_sink)
         # pairs, queued because a turn was already in flight when
@@ -190,18 +196,6 @@ class WarmBrain:
         # satellite per task.
         self._active_tasks: set[str] = set()
         self._task_desc: dict = {}   # task id -> what it's doing, for the devices' task view
-        # Which device's turn started each background task. Its finish
-        # makes the agent speak up in a turn nobody asked for just then,
-        # but it WAS asked for, in advance (a cooking timer, a long
-        # build): that turn goes back to the device that asked.
-        self._task_owner: dict = {}
-        # Finished tasks whose follow-up turn hasn't started yet because
-        # another turn was running (ma'am chatting in the kitchen while
-        # sir's peer-link result lands): (owner, finished at). The next
-        # turn nobody dispatched takes the oldest, so it goes to the
-        # device that asked instead of every device.
-        self._owed: deque = deque()
-        self._dispatched = False     # the running turn came from ask(), not the SDK
         # Set when input from another device joined the running turn
         # (brain_hermes.py's steer): its rest goes to _current_asker.
         self._widen_turn = False
@@ -276,10 +270,24 @@ class WarmBrain:
         utterance, remote_sink, self._ask_t0, self._heard = self._ask_queue.popleft()
         self._turn_active = True
         self._last_main = time.monotonic()
-        self._dispatched = True
         self._current_asker = remote_sink
         self.bus.set_active_conn(getattr(remote_sink, "conn_id", None))
         asyncio.ensure_future(self._client.query(utterance))
+
+    def where(self):
+        """The sink the live turn speaks to: whoever asked, else (a turn
+        nobody here started: a helper finishing, a task notification) the
+        device sir last used, pinned by the bridge (web.py's pin). Called
+        once per turn, at its first words; its device is stamped active so
+        only that face animates."""
+        if self._current_asker is not None:
+            return self._current_asker
+        return self._fallback()
+
+    def _fallback(self):
+        s = _pin(self.remote_sink)
+        self.bus.set_active_conn(getattr(s, "conn_id", None))
+        return s
 
     def _release_if_stuck(self):
         """Backstop: a turn marked active with no main-conversation message
@@ -296,7 +304,6 @@ class WarmBrain:
             self._turn_active = False
             self._discard_until_result = False
             self._current_asker = None
-            self._dispatched = False
             self._dispatch_next()
             return True
         return False
@@ -306,8 +313,6 @@ class WarmBrain:
         session itself was cleared/reset underneath it)."""
         self._active_tasks.clear()
         self._task_desc.clear()
-        self._task_owner.clear()
-        self._owed.clear()
         self.bus.set_tasks(0)
         self.bus.set_active_conn(None)
 
@@ -623,7 +628,7 @@ class WarmBrain:
         def emit(raw: str):
             nonlocal first, batch, pending, turn_sink, quiet
             if self._widen_turn:
-                turn_sink, self._widen_turn = self._current_asker, False
+                turn_sink, self._widen_turn = _pin(self._current_asker), False
             found = _DIRECTION_TAG.findall(raw)
             if found:
                 pending += [d.strip() for d in found if d.strip()]
@@ -639,7 +644,7 @@ class WarmBrain:
                 # is spoken; its tags still fire (see mouth._run).
                 timing = ""
                 if first:
-                    turn_sink = self._current_asker or self.remote_sink
+                    turn_sink = self.where()
                     timing = self._timing()
                     self.bus.static_stop()
                 log(f"[{self.label}] (quiet) {f'({timing}) ' if timing else ''}{s}"
@@ -660,13 +665,14 @@ class WarmBrain:
                 # A device that dropped between asking and the reply (a
                 # watch app closing its socket) keeps its reply: the
                 # sink finds its reconnect by device id and replays the
-                # text lines then. Only an anonymous sink falls back to
-                # broadcasting, so a reply never lands on other rooms.
+                # text lines then. Only an anonymous sink falls back,
+                # like a turn nobody asked for, to the device sir last
+                # used (_fallback), so a reply never lands on other rooms.
                 if turn_sink is not None and hasattr(turn_sink, "is_live") \
                         and not turn_sink.is_live() \
                         and not getattr(turn_sink, "conn_id", None):
                     turn_sink = None
-                turn_sink = turn_sink or self.remote_sink
+                turn_sink = turn_sink or self._fallback()
                 timing = self._timing()
                 log(f"[{self.label}] {f'({timing}) ' if timing else ''}{s}"
                     + (f"  <directions: {pending}>" if pending else ""))
@@ -692,7 +698,7 @@ class WarmBrain:
             if pending and self.mouth:
                 # A tag after the last sentence: nothing left to carry it,
                 # so it goes alone and fires when the speech before it ends.
-                self.mouth.say_chunk("", pending, self._current_asker if first else turn_sink)
+                self.mouth.say_chunk("", pending, self.where() if first else turn_sink)
             if first or quiet:
                 # Zero sentences yielded (brain error / empty turn), or a
                 # text-only reply: no speech to stop the thinking sound.
@@ -700,8 +706,9 @@ class WarmBrain:
                 self.bus.static_stop()
             # The turn is over, spoken or not: a quiet reply has no
             # reply_done, and a peer agent waits on this (see say.py).
-            send = getattr(turn_sink if not first else (self._current_asker or self.remote_sink),
-                           "send", None)
+            # (An empty turn nobody asked for sends nothing: a watch counts
+            # the turn_dones it's owed.)
+            send = getattr(turn_sink if not first else self._current_asker, "send", None)
             if send is not None:
                 send({"type": "turn_done"})
             first, batch, pending, quiet = True, [], [], False
@@ -746,8 +753,6 @@ class WarmBrain:
                     self._active_tasks.add(msg.task_id)
                     self._task_desc[msg.task_id] = msg.description
                     self.bus.set_tasks(len(self._active_tasks))
-                    if self._current_asker is not None:
-                        self._task_owner[msg.task_id] = self._current_asker
                 elif isinstance(msg, (TaskNotificationMessage,
                                       TaskUpdatedMessage)):
                     # A terminal status can arrive on EITHER message type,
@@ -759,16 +764,6 @@ class WarmBrain:
                         self._active_tasks.discard(msg.task_id)
                         self._task_desc.pop(msg.task_id, None)
                         self.bus.set_tasks(len(self._active_tasks))
-                        # The turn this finish triggers comes next: owe it
-                        # to the device that started the task, unless a
-                        # turn is already running (it keeps its own asker).
-                        owner = self._task_owner.pop(msg.task_id, None)
-                        if owner is not None and not self._turn_active \
-                                and self._current_asker is None:
-                            self._current_asker = owner
-                            self.bus.set_active_conn(getattr(owner, "conn_id", None))
-                        elif owner is not None:
-                            self._owed.append((owner, time.time()))
 
                 if getattr(msg, "parent_tool_use_id", None):
                     # A sub-agent's traffic (an Agent-tool helper streaming
@@ -820,15 +815,6 @@ class WarmBrain:
                     continue
 
                 if t == "StreamEvent":
-                    if self._current_asker is None and self._owed and not self._dispatched:
-                        # a turn nobody dispatched: a finished task's
-                        # follow-up, owed to the device that started it
-                        # ponytail: oldest-first guess, fine while tasks finish in order; tag turns by task id if they don't
-                        while self._owed and time.time() - self._owed[0][1] > 900:
-                            self._owed.popleft()
-                        if self._owed:
-                            self._current_asker = self._owed.popleft()[0]
-                            self.bus.set_active_conn(getattr(self._current_asker, "conn_id", None))
                     self._turn_active = True
                     if self._discard_until_result:
                         continue
@@ -876,11 +862,9 @@ class WarmBrain:
                     self._turn_active = False
                     log_shape()
                     # This turn is over: nobody's question is in flight
-                    # until the next dispatch stamps one. Clearing here
-                    # (before any next dispatch) means an UNPROMPTED turn
-                    # (background report) animates every tab, matching
-                    # its broadcast audio. A reply still playing keeps its
-                    # tab via mouth's playing stamp, which wins.
+                    # until the next dispatch stamps one (or where() pins
+                    # an unprompted turn's device). A reply still playing
+                    # keeps its tab via mouth's playing stamp, which wins.
                     self.bus.set_active_conn(None)
                     if was_discarding:
                         buf = ""
@@ -890,7 +874,6 @@ class WarmBrain:
                         self._tally(msg)
                         self._remember_session(msg)
                         self._current_asker = None
-                        self._dispatched = False
                         self._dispatch_next()
                         if self._turn_active:     # else leave it: a barge-in may be listening
                             self.bus.set_state("thinking")
@@ -900,7 +883,6 @@ class WarmBrain:
                     await self._pull_rate_limits()
                     end_turn()
                     self._current_asker = None
-                    self._dispatched = False
                     self._dispatch_next()
                     # The model is done unless a queued ask just went out;
                     # a reply still playing settles it when it ends (mouth).
@@ -945,7 +927,6 @@ class WarmBrain:
         # rebuild would ever get sent.
         self._turn_active = False
         self._current_asker = None
-        self._dispatched = False
         self._dispatch_next()
         log("[brain] reader rebuilt the session after a stream error "
             "(conversation memory for this session resets)")

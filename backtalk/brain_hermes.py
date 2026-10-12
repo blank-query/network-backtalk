@@ -377,7 +377,8 @@ class HermesBrain(WarmBrain):
         log(f"[brain] hermes {verb}: {status}")
         asker = self._current_asker
         if asker is not None and getattr(sink, "conn_id", None) != getattr(asker, "conn_id", None):
-            # another device joined this turn: the rest of it goes to every device
+            # another device joined this turn: the rest of it goes to the
+            # device sir last used (the one that just joined, if it's his)
             self._current_asker = self.remote_sink
             self._widen_turn = True
 
@@ -416,7 +417,6 @@ class HermesBrain(WarmBrain):
         self._open_tools.clear()
         self._turn_active = False
         self._current_asker = None
-        self._dispatched = False
         self._dispatch_next()
         log("[brain] reader rebuilt the hermes gateway after a stream error")
 
@@ -447,7 +447,6 @@ class HermesBrain(WarmBrain):
                 self._open_tools.clear()
                 self._turn_active = self._discard_until_result = False
                 self._current_asker = None
-                self._dispatched = False
                 self._dispatch_next()
                 return "cleared"
             if verb == "/effort":
