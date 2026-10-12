@@ -584,15 +584,20 @@ class Mouth:
                     self._reply_finished(remote_sink)
 
     def _muted_for(self, remote_sink) -> bool:
-        """The desktop is muted (signals.muted) and this audio would only
-        sound here: this machine's own turn, or one from a device on this
-        machine (the face window, the terminal chat). A device elsewhere
-        that asked still gets its reply; a session that owns one device
-        (local False) is never muted."""
+        """Nobody would hear this audio, so synthesize none. Either the
+        desktop is muted (signals.muted) and it would only sound here: this
+        machine's own turn, or one from a device on this machine (the face
+        window). A device elsewhere that asked still gets its reply; a
+        session that owns one device (local False) is never muted. Or the
+        asker plays no audio (its hello said "audio": false, the terminal
+        chat) and this machine's speakers won't play it either."""
         from backtalk import signals
+        conn = getattr(remote_sink, "conn", None)
+        if remote_sink is not None and getattr(conn, "audio", True) is False:
+            return not (self.local and not signals.muted() and bool(CFG.get("web", {}).get(
+                "local_playback_on_remote_turn", True)))
         if not self.local or not signals.muted():
             return False
-        conn = getattr(remote_sink, "conn", None)
         return remote_sink is None or bool(getattr(conn, "loopback", False))
 
     def _reply_finished(self, remote_sink):
