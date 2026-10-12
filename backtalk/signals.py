@@ -31,6 +31,10 @@ is the whole integration surface:
   .voice_speed        JSON {gen, read?, ts}: the last model call's tok/s
                       (read = prompt processing, when the server says);
                       only written when show_speed is on (default)
+  .voice_muted        exists while the desktop is muted (written by the
+                      face window's mute button, or `touch`/`rm` it):
+                      no speech is synthesized for this machine's
+                      speakers or its own windows; see muted()
 
 Written to signals_dir (default: the repo root). Visualizers built on
 this contract just work.
@@ -66,6 +70,7 @@ _ACTIVE_CONN_FILE = os.path.join(_DIR, ".voice_active_conn")
 _MIC_MODE_FILE = os.path.join(_DIR, ".voice_mic_mode")
 _CAPTURING_FILE = os.path.join(_DIR, ".voice_capturing")
 _SPEED_FILE = os.path.join(_DIR, ".voice_speed")
+_MUTED_FILE = os.path.join(_DIR, ".voice_muted")
 
 _BH = CFG.get("barehands_state_dir") or ""
 _BH_STATE = os.path.join(_BH, "state") if _BH else ""
@@ -361,10 +366,18 @@ def _player_cmd(path: str) -> list[str] | None:
     return None
 
 
+def muted() -> bool:
+    """The desktop is muted (.voice_muted exists): mouth.py synthesizes
+    nothing for this machine's speakers, nor for a device on this machine
+    (the face window, the terminal chat); a device elsewhere that asked
+    still hears its reply. Text flows as always."""
+    return os.path.exists(_MUTED_FILE)
+
+
 def static_start():
     """Optional thinking sound — plays while the brain works."""
     global _static_proc
-    if not _THINKING_SOUND or not os.path.exists(_THINKING_SOUND):
+    if not _THINKING_SOUND or not os.path.exists(_THINKING_SOUND) or muted():
         return
     static_stop()
     cmd = _player_cmd(_THINKING_SOUND)
