@@ -28,7 +28,7 @@ async def main():
     with open(br.devices_file, "w") as f:
         json.dump({"pix": {"name": "Phone", "role": "full"}, "old": {"name": "Kitchen"}}, f)
     turns = []
-    br.on_phone_result = lambda conn, text: turns.append(text)
+    br.on_phone_result = lambda conn, text, private=False: turns.append(text)
     srv = asyncio.ensure_future(br.serve())
     await asyncio.sleep(0.3)
     url = "ws://127.0.0.1:18797"
