@@ -466,7 +466,7 @@ def barges_in(text, heard):
     return console_match(text) in ("stop", "abort") or len(heard) == 1
 
 
-ABORT_WAIT_S = 60      # how long the abort's question waits for its answer
+ABORT_WAIT_S = 30      # how long the abort's question waits for its answer, then cancels quietly
 _ABORT_ALL = {"everything", "all", "all of them", "everything please", "the lot", "both",
               "all of it", "yes everything"}
 _ABORT_NONE = {"nothing", "none", "never mind", "nevermind", "cancel", "no", "nope",
@@ -479,6 +479,23 @@ _ORDINALS2 = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh",
 _ABORT_FILLER = {"one", "please", "task", "helper", "that", "this", "the"}
 _ABORT_YES = {"yes", "yeah", "yep", "yes please", "do it", "confirm", "confirmed", "go ahead",
               "stop it", "yes stop it", "yes do it", "sure"}
+
+
+def abort_readback(descs):
+    """The abort's read-back, ending in how to answer (sir, 2026-10-11:
+    a list with no prompt left him guessing)."""
+    if not descs:
+        return "Nothing in the background, just my current work. Stop it? Yes or no."
+    if len(descs) == 1:
+        return f"Running: {_short(descs[0])}. Stop it? Yes or no."
+    return ("Running: " + " ".join(f"{_ORDINALS[i] if i < 10 else i + 1}, {_short(d)}."
+                                   for i, d in enumerate(descs))
+            + " Say a number, everything, or never mind.")
+
+
+def _short(d: str) -> str:
+    d = " ".join(str(d).split())
+    return d if len(d) <= 70 else d[:70].rsplit(" ", 1)[0]
 
 
 def abort_pick(text, descs):
@@ -537,6 +554,21 @@ def abort_step(text, descs, pending=None):
     if pick is None:
         return "cancel", None
     return ("none", None) if pick == "none" else ("ask", pick)
+
+
+def hold_reason(abort, sink, mic_capturing=False):
+    """Why a turn nobody asked for (a helper finishing, a task
+    notification) must wait before it speaks, or None: the abort's menu
+    is open (until answered, cancelled, or ABORT_WAIT_S old), or sir is
+    talking into the device it would speak on (sink None: this machine's
+    own mic). See brain.hold."""
+    if abort["brain"] is not None and time.monotonic() - abort["at"] < ABORT_WAIT_S:
+        return "the abort menu is open"
+    c = getattr(sink, "conn", None)
+    if (getattr(c, "recording", False) or getattr(c, "capturing", False)) if c is not None \
+            else mic_capturing:
+        return "sir is talking"
+    return None
 
 
 def trailing_mic_verb(text):
@@ -817,6 +849,7 @@ async def amain():
     # it once the gate has a real brain to close over.
     brain = WarmBrain(model=model, resume_id=resume_id, mouth=mouth)
     brain._can_use_tool = make_permission_gate(mouth, brain)
+    brain.hold = lambda s: hold_reason(_ABORT, s, _MIC.get("capturing"))
 
     mode = ("hands-free listening (the talk key still works)"
             if _MIC["mode"] == "open"
@@ -1003,15 +1036,11 @@ async def amain():
             if not tasks and not b.turn_active:
                 tell("Nothing's running.", sink)
             else:
-                _ABORT.update(brain=b, tasks=tasks, at=time.monotonic(), pick=None,
+                # one task: the read-back is the confirm ("Stop it? Yes or no.")
+                _ABORT.update(brain=b, tasks=tasks, at=time.monotonic(),
+                              pick=0 if len(tasks) == 1 else None,
                               conn=getattr(sink, "conn_id", None))
-                if tasks:
-                    tell("Running: " + " ".join(
-                        f"{_ORDINALS[i] if i < 10 else i + 1}, {_short(d)}." for i, (_, d) in enumerate(tasks))
-                        + " Stop everything, a number, or never mind?", sink)
-                else:
-                    tell("Nothing in the background, just my current work. "
-                         "Stop it? Everything, or never mind.", sink)
+                tell(abort_readback([d for _, d in tasks]), sink)
         elif verb == "noask":
             resp = ""
             _CONFIRM["verb"] = "noask"
@@ -1095,12 +1124,9 @@ async def amain():
     # the abort's open question; "pick" is set while it asks to confirm one
     _ABORT = {"brain": None, "tasks": [], "conn": None, "at": 0.0, "pick": None}
 
-    def _short(d: str) -> str:
-        d = " ".join(str(d).split())
-        return d if len(d) <= 70 else d[:70].rsplit(" ", 1)[0]
-
     def tell(text, sink):
-        """Spoken, and shown in that device's terminal."""
+        """Spoken, shown in that device's terminal, and logged."""
+        log(f"[abort] said: {text}")
         mouth.say(text, remote_sink=sink)
         if hasattr(sink, "send"):
             sink.send({"type": "line", "who": "jarvis", "text": text})
@@ -1204,8 +1230,9 @@ async def amain():
                 return True
         if _ABORT["brain"] is not None \
                 and getattr(remote_sink, "conn_id", None) == _ABORT["conn"]:
-            if time.monotonic() - _ABORT["at"] < ABORT_WAIT_S \
-                    and await _abort_answer(text, remote_sink):
+            if time.monotonic() - _ABORT["at"] >= ABORT_WAIT_S:
+                log("[abort] no answer in time, cancelled")
+            elif await _abort_answer(text, remote_sink):
                 return True
             _ABORT["brain"] = None
         if any(q in text.lower() for q in QUIT_PHRASES):
@@ -1702,6 +1729,7 @@ async def amain():
             b = WarmBrain(model=brain.model, mouth=m, bus=bus, persist=False,
                           label=f"Jarvis@{bridge.name_of(conn.id)}", append=append)
             b._can_use_tool = make_permission_gate(m, b)
+            b.hold = brain.hold
             b.remote_sink = bridge.make_sink(conn)
             await b.start()
             return b
