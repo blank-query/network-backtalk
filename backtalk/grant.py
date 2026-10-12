@@ -27,6 +27,7 @@ the peer secret. Run only on the owner's explicit say-so.
       {id, name, url, color, face}, "token"}. The device keeps it and
       offers this assistant in its picker. Not delivered = not kept.
   python -m backtalk.grant "<device name>" --revoke    its tokens stop working
+      (refused with 4403 "revoked": only then does the device forget this assistant)
   python -m backtalk.grant --list                      who holds one (no tokens shown)
 
 Needs config "lan_url" (how a device reaches this bridge, e.g.
@@ -108,11 +109,16 @@ def grant(cfg, device: str, pi_url: str, peer_tok: str) -> str:
 
 
 def revoke(cfg, device: str) -> str:
+    """Its hashes move under "revoked", so the bridge can tell the device
+    (4403) and only then does the device forget this assistant."""
     p = tokens_path(cfg)
     d = load(p)
-    keep = {h: e for h, e in d.items() if e.get("device") != device}
-    save(p, keep)
-    return f"revoked {len(d) - len(keep)} token(s) for {device}"
+    gone = [h for h, e in d.items() if h != "revoked" and isinstance(e, dict) and e.get("device") == device]
+    rev = d.setdefault("revoked", {})
+    for h in gone:
+        rev[h] = {"device": d.pop(h).get("device"), "revoked": time.strftime("%Y-%m-%d %H:%M")}
+    save(p, d)
+    return f"revoked {len(gone)} token(s) for {device}"
 
 
 def main():
@@ -120,7 +126,7 @@ def main():
     args = sys.argv[1:]
     if args == ["--list"]:
         print("\n".join(f"{e.get('device')} (issued {e.get('issued')})"
-                        for e in load(tokens_path(CFG)).values()) or "(none)")
+                        for h, e in load(tokens_path(CFG)).items() if h != "revoked") or "(none)")
         return
     if not args or args[0].startswith("-"):
         sys.exit(__doc__)
