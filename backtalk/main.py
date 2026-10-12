@@ -451,36 +451,73 @@ ABORT_WAIT_S = 60      # how long the abort's question waits for its answer
 _ABORT_ALL = {"everything", "all", "all of them", "everything please", "the lot", "both",
               "all of it", "yes everything"}
 _ABORT_NONE = {"nothing", "none", "never mind", "nevermind", "cancel", "no", "nope",
-               "neither", "leave it", "leave them", "keep them", "keep it", "none of them"}
+               "neither", "leave it", "leave them", "keep them", "keep it", "none of them", "no thanks"}
 _ORDINALS = ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
 _ORDINALS2 = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
               "ninth", "tenth")
 
 
+_ABORT_FILLER = {"one", "please", "task", "helper", "that", "this", "the"}
+_ABORT_YES = {"yes", "yeah", "yep", "yes please", "do it", "confirm", "confirmed", "go ahead",
+              "stop it", "yes stop it", "yes do it", "sure"}
+
+
 def abort_pick(text, descs):
     """The answer to the abort's question: "all", "none", an index into
-    descs (a number, or the one description sharing the most words), or
-    None when it can't tell."""
+    descs, or None when it isn't a clear answer. Clear means short (six
+    words or fewer) and nothing but: everything, never mind, a number,
+    or words all from one task's description. Anything else is a normal
+    message (2026-10-11: a long remark that named a helper in passing
+    stopped it)."""
     words = "".join(c if c.isalnum() else " " for c in text.lower()).split()
     name = NAME.lower().split()
     if words and SequenceMatcher(None, " ".join(words[:len(name)]), " ".join(name)).ratio() >= 0.75:
         words = words[len(name):]
     while words and words[0] in ("stop", "kill", "abort", "end", "just", "only", "the", "number"):
         words = words[1:]
+    while words and words[-1] == "please":
+        words = words[:-1]
+    if not words or len(words) > 6:
+        return None
     t = " ".join(words)
-    if t in _ABORT_ALL or t.startswith("everything"):
+    if t in _ABORT_ALL or t in ("everything " + w for w in ("now", "please", "running")):
         return "all"
     if t in _ABORT_NONE:
         return "none"
-    for w in words:
+    num = [w for w in words if w not in ("one", "the")] or words    # "the first one", "one"
+    if len(num) == 1:
+        w = num[0]
         n = int(w) if w.isdigit() else (_ORDINALS.index(w) + 1 if w in _ORDINALS
                                          else _ORDINALS2.index(w) + 1 if w in _ORDINALS2 else 0)
-        if 1 <= n <= len(descs):
-            return n - 1
-    said = {w for w in words if len(w) > 2}
-    hits = [len(said & {w.lower().strip(".,:;()") for w in d.split()}) for d in descs]
-    best = max(hits, default=0)
-    return hits.index(best) if best and hits.count(best) == 1 else None
+        if n:
+            return n - 1 if n <= len(descs) else None
+    said = {w for w in words if len(w) > 2 and w not in _ABORT_FILLER}
+    hits = [i for i, d in enumerate(descs)
+            if said and said <= {w for w in "".join(c if c.isalnum() else " " for c in d.lower()).split()}]
+    return hits[0] if len(hits) == 1 else None
+
+
+def abort_step(text, descs, pending=None):
+    """One answer in the abort's exchange -> (action, pick). With nothing
+    pending it answers the read-back: a clear pick is asked back first
+    ("ask"), never stopped on the spot; with no background tasks the
+    read-back ("just my current work. Stop it?") was the question, so a
+    yes or "everything" stops it ("do"). With a pick pending only a yes
+    stops it. "none": never mind. "cancel": not an answer, the abort is
+    dropped and the words are a normal message."""
+    t = " ".join("".join(c if c.isalnum() else " " for c in text.lower()).split())
+    n = NAME.lower()
+    t = t[len(n):].strip() if t.startswith(n + " ") else t
+    if pending is not None:
+        if t in _ABORT_YES:
+            return "do", pending
+        return ("none", None) if abort_pick(text, []) == "none" else ("cancel", None)
+    pick = abort_pick(text, descs)
+    if not descs and (pick == "all" or t in _ABORT_YES):
+        return "do", "all"
+    if pick is None:
+        return "cancel", None
+    return ("none", None) if pick == "none" else ("ask", pick)
 
 
 def trailing_mic_verb(text):
@@ -941,7 +978,7 @@ async def amain():
             if not tasks and not b.turn_active:
                 tell("Nothing's running.", sink)
             else:
-                _ABORT.update(brain=b, tasks=tasks, at=time.monotonic(),
+                _ABORT.update(brain=b, tasks=tasks, at=time.monotonic(), pick=None,
                               conn=getattr(sink, "conn_id", None))
                 if tasks:
                     tell("Running: " + " ".join(
@@ -1030,7 +1067,8 @@ async def amain():
                                             or getattr(x, "id", None))
         return sessions.get(cid, brain)
 
-    _ABORT = {"brain": None, "tasks": [], "conn": None, "at": 0.0}   # the abort's open question
+    # the abort's open question; "pick" is set while it asks to confirm one
+    _ABORT = {"brain": None, "tasks": [], "conn": None, "at": 0.0, "pick": None}
 
     def _short(d: str) -> str:
         d = " ".join(str(d).split())
@@ -1054,26 +1092,38 @@ async def amain():
         if b.remote_sink is not None:
             b.remote_sink.stop()
 
-    async def _abort_answer(text, sink):
-        """The next words after the abort's read-back pick what stops."""
-        b, tasks = _ABORT["brain"], _ABORT["tasks"]
-        _ABORT["brain"] = None
-        pick = abort_pick(text, [d for _, d in tasks])
+    async def _abort_do(b, tasks, pick, sink) -> bool:
         if pick == "all":
             for tid, _ in b.running():
                 await b.stop_task(tid)
             await b.abort_turn()
             line = "Stopped everything."
-        elif pick == "none":
-            line = "Leaving everything running."
-        elif pick is None:
-            line = "I didn't catch which, so nothing's stopped."
         else:
             d = _short(tasks[pick][1])
             line = (f"Stopped {d}." if await b.stop_task(tasks[pick][0])
                     else f"I couldn't stop {d}. It may have finished.")
-        log(f"[abort] {text!r} -> {pick}: {line}")
+        log(f"[abort] confirmed {pick}: {line}")
         tell(line, sink)
+        return True
+
+    async def _abort_answer(text, sink) -> bool:
+        """The next words after the abort's read-back (abort_step). False:
+        the abort is cancelled and the words go on as a normal message."""
+        b, tasks, pending = _ABORT["brain"], _ABORT["tasks"], _ABORT["pick"]
+        _ABORT["brain"] = None
+        act, pick = abort_step(text, [d for _, d in tasks], pending)
+        log(f"[abort] {text!r} -> {act} {pick}")
+        if act == "cancel":
+            return False
+        if act == "none":
+            tell("Leaving everything running.", sink)
+        elif act == "ask":
+            _ABORT.update(brain=b, pick=pick, at=time.monotonic())
+            tell("Stop everything? Yes or no." if pick == "all"
+                 else f"Stop {_short(tasks[pick][1])}? Yes or no.", sink)
+        else:
+            await _abort_do(b, tasks, pick, sink)
+        return True
 
     async def handle(text: str, spoke_from: float | None = None,
                      interrupt: bool = True, remote_sink=None,
@@ -1125,8 +1175,8 @@ async def amain():
                 return True
         if _ABORT["brain"] is not None \
                 and getattr(remote_sink, "conn_id", None) == _ABORT["conn"]:
-            if time.monotonic() - _ABORT["at"] < ABORT_WAIT_S:
-                await _abort_answer(text, remote_sink)
+            if time.monotonic() - _ABORT["at"] < ABORT_WAIT_S \
+                    and await _abort_answer(text, remote_sink):
                 return True
             _ABORT["brain"] = None
         if any(q in text.lower() for q in QUIT_PHRASES):

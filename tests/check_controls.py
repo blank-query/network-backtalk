@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 from backtalk import brain as B, mouth as M
 from backtalk.brain_hermes import HermesClient
-from backtalk.main import abort_pick, console_match, barges_in
+from backtalk.main import abort_pick, abort_step, console_match, barges_in
 from backtalk.web import BrowserBridge, Conn
 
 # ---- the abort's answer
@@ -21,6 +21,20 @@ for said, want in [("Everything.", "all"), ("Jarvis, everything", "all"), ("stop
                    ("banana", None), ("seven", None), ("", None)]:
     got = abort_pick(said, tasks)
     assert got == want, (said, got, want)
+# a long remark naming a helper in passing is not an answer (2026-10-11: it stopped one)
+helpers = ["Watch interrupt pill not firing", "App keeps keys unless truly revoked"]
+said = "That was me holding the bill not firing Two app keeps Keys unless truly revoked"
+assert abort_pick(said, helpers) is None and abort_step(said, helpers) == ("cancel", None)
+for said, want in [("two", ("ask", 1)), ("app keeps keys", ("ask", 1)), ("everything", ("ask", "all")),
+                   ("never mind", ("none", None)), ("what's the weather like", ("cancel", None))]:
+    assert abort_step(said, helpers) == want, (said, abort_step(said, helpers), want)
+# the confirmation: only a yes stops; no leaves it; anything else is a message
+assert abort_step("Yes.", helpers, 1) == ("do", 1) and abort_step("Jarvis, yes", helpers, "all") == ("do", "all")
+assert abort_step("No.", helpers, 1) == ("none", None)
+assert abort_step("two app keeps keys", helpers, 1) == ("cancel", None)
+# no background tasks: "Stop it?" was the question, so yes or everything stops the turn
+assert abort_step("yes", []) == ("do", "all") and abort_step("everything", []) == ("do", "all")
+assert abort_step("one", []) == ("cancel", None)
 assert console_match("Jarvis, abort.") == "abort" and console_match("abort") is None
 assert barges_in("Jarvis, abort", [])
 
