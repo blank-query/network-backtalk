@@ -1871,8 +1871,9 @@ async def amain():
             who = CFG.get("peer_name") or NAME
             bridge.identity = {"type": "identity", "name": who, "color": CFG.get("identity_color") or "",
                                "face": CFG.get("identity_face") or "", "hues": CFG.get("identity_hues") or {}}
-            bridge.on_switch = lambda conn: mouth.say(CFG.get("identity_line") or f"{who} here.",
-                                                      remote_sink=bridge.make_sink(conn))
+            # built now: `who` is reused below for each turn's speaker (often None)
+            switch_line = CFG.get("identity_line") or f"{who} here."
+            bridge.on_switch = lambda conn: mouth.say(switch_line, remote_sink=bridge.make_sink(conn))
             brain.remote_sink = bridge.make_broadcast_sink()
             asyncio.create_task(bridge.serve())
             asyncio.create_task(_timer_watch())
