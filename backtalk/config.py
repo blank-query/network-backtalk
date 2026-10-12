@@ -24,6 +24,7 @@ adds is the spoken-delivery discipline below, which is about the MEDIUM
 (writing for the ear), never the character.
 """
 import json
+import re
 import os
 from pathlib import Path
 
@@ -93,7 +94,8 @@ DEFAULTS = {
     # Extra MCP servers for the voice session, in the SDK's mcp_servers
     # shape: {"name": {"command": ..., "args": [...]}}. Empty = none
     # beyond what your Claude Code settings already load. e.g. desktop
-    # computer use (kwin-mcp) on one machine and not another.
+    # computer use (kwin-mcp) on one machine and not another. "${VAR}" in
+    # any string here (a header, a url) is filled from the environment.
     "mcp_servers": {},
     # Extra Claude Code CLI flags, {"flag": value or null}, e.g.
     # {"strict-mcp-config": null} so only mcp_servers above load, never the
@@ -221,7 +223,7 @@ DEFAULTS = {
     # nemo_en_titanet_small.onnx from sherpa-onnx's
     # speaker-recongition-models release (pip install sherpa-onnx);
     # "" = off. A name needs this cosine score, and a lead over the
-    # runner-up (voiceprint.MARGIN); below either it's "voice unknown".
+    # runner-up (voiceprint.MARGIN); below either it's "voice: unknown".
     # 0.25 let noisy Kitchen clips through as the wrong person at 0.30.
     # The longest an open-mic utterance may run before it's cut off (a
     # long talker in a kitchen hit 30 s mid-thought; the Pi uses 90).
@@ -430,6 +432,18 @@ def _expand(p: str) -> str:
     return os.path.expanduser(p) if p else p
 
 
+def _env_refs(v):
+    """${VAR} -> its environment value in every string of v (unset: left as is),
+    so a secret (an MCP server's Authorization header) stays out of backtalk.json."""
+    if isinstance(v, str):
+        return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m[1], m[0]), v)
+    if isinstance(v, dict):
+        return {k: _env_refs(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_env_refs(x) for x in v]
+    return v
+
+
 def load() -> dict:
     cfg = json.loads(json.dumps(DEFAULTS))          # deep copy
     try:
@@ -445,6 +459,7 @@ def load() -> dict:
         print(f"[config] backtalk.json is not valid JSON ({e}), "
               f"using defaults", flush=True)
     cfg["agent_dir"] = _expand(cfg["agent_dir"])
+    cfg["mcp_servers"] = _env_refs(cfg.get("mcp_servers") or {})
     cfg["extra_dirs"] = [_expand(d) for d in cfg.get("extra_dirs", [])]
     cfg["signals_dir"] = _expand(cfg.get("signals_dir", "")) or str(REPO)
     cfg["barehands_state_dir"] = _expand(cfg.get("barehands_state_dir", ""))
