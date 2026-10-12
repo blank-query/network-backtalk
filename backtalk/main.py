@@ -300,7 +300,7 @@ def make_permission_gate(mouth, brain):
             _PERM["hinted"] = True
             ask += (" And any time you're done with these checks, say "
                     "stop asking for permission.")
-        mouth.say(ask, remote_sink=brain.remote_sink)
+        mouth.say(ask, remote_sink=brain.where())
         answer = None
         try:
             deadline = loop.time() + PERM_TIMEOUT_S
@@ -317,7 +317,7 @@ def make_permission_gate(mouth, brain):
                         if loop.time() >= deadline:
                             fut.cancel()
                             mouth.say("No answer, so I didn't do it.",
-                                     remote_sink=brain.remote_sink)
+                                     remote_sink=brain.where())
                             log("[perm]   timed out, denied")
                             return PermissionResultDeny(
                                 behavior="deny",
@@ -335,7 +335,7 @@ def make_permission_gate(mouth, brain):
                     # not silence
                     log("[perm]   details requested")
                     mouth.say(f"The details: I want to {detail}. "
-                              "Yes or no?", remote_sink=brain.remote_sink)
+                              "Yes or no?", remote_sink=brain.where())
                     deadline = loop.time() + PERM_TIMEOUT_S
                     continue
                 answer = got
@@ -1137,6 +1137,10 @@ async def amain():
         asking connection, so its reply routes back there instead of
         broadcasting; see brain.py's ask()."""
         log(f"[you]    {text}")
+        if bridge is not None and (remote_sink is not None or spoke_from is not None):
+            # a turn nobody asks for later goes to this device (web.py's
+            # pin); the typed console (no sink, no press) is maintenance
+            bridge.used(remote_sink)
         if hasattr(remote_sink, "send"):
             remote_sink.send({"type": "line", "who": "you", "text": text})
         # A pending spoken permission ask owns the next utterance IF
@@ -1269,8 +1273,9 @@ async def amain():
         # tab said them. Routing per device is handled below instead,
         # by tagging each ask() with the asking connection's own sink
         # (see brain.py's _current_asker), no separate session needed
-        # for that. brain.remote_sink stays the broadcast one, for
-        # turns nobody specific asked for (background reports).
+        # for that. brain.remote_sink is the bridge's recent sink, for
+        # turns nobody specific asked for (a helper finishing): the device
+        # sir last used, never every device.
         bridge: BrowserBridge | None = None
 
         # Pictures shared from a device (the app's share target), by
@@ -1923,7 +1928,7 @@ async def amain():
             # built now: `who` is reused below for each turn's speaker (often None)
             switch_line = CFG.get("identity_line") or f"{who} here."
             bridge.on_switch = lambda conn: mouth.say(switch_line, remote_sink=bridge.make_sink(conn))
-            brain.remote_sink = bridge.make_broadcast_sink()
+            brain.remote_sink = bridge.make_recent_sink()
             asyncio.create_task(bridge.serve())
             asyncio.create_task(_timer_watch())
             if CFG.get("peer_link"):
