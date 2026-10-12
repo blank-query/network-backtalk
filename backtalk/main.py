@@ -76,7 +76,7 @@ from backtalk.config import CFG
 if CFG.get("brain") == "hermes":   # Hermes Agent instead of Claude Code (brain_hermes.py)
     from backtalk.brain_hermes import SESSION_FILE, HermesBrain as WarmBrain
 from backtalk.ears import (Ears, Session, babble, explain_audio_failure,
-                           record_held, warm as warm_ears, Endpoint)
+                           record_held, reread, warm as warm_ears, Endpoint)
 from backtalk.mouth import DIRECTION_HOOKS, Mouth, synth_stream, warm as warm_mouth
 from backtalk.ptt import PTTListener
 from backtalk.vlog import log
@@ -466,6 +466,25 @@ def barges_in(text, heard):
     the reply, which plays on. `heard` (the enrolled voices) no longer
     decides; kept for the log line."""
     return says_name(text)
+
+
+def second_read(text, pcm):
+    """Talk-over whose transcript has no name (or none at all) gets one
+    more, whole-clip read (ears.reread); if that one names the agent it
+    wins, so the reply is cut. Moonshine alone missed "Jarvis" on quiet
+    echo-cancelled clips from the desk (2026-10-12)."""
+    if says_name(text or "") or pcm is None:
+        return text
+    t = time.monotonic()
+    try:
+        again = reread(pcm, NAME)
+    except Exception as e:
+        log(f"[ears] second read failed: {e!r}")
+        return text
+    if again is None:
+        return text
+    log(f"[ears] second read over a reply in {time.monotonic() - t:.2f}s: {again[:60]!r}")
+    return _corrected(again) if says_name(again) else text
 
 
 ABORT_WAIT_S = 30      # how long the abort's question waits for its answer, then cancels quietly
@@ -1879,6 +1898,10 @@ async def amain():
                         log(f"[web] hands-free listener failed: {e!r}")
                         time.sleep(1)
                         continue
+                    b = brain_for(conn)
+                    if text is not None and not stop() and not conn.phone_stt \
+                            and (b.turn_active or b.mouth.speaking):
+                        text = second_read(text, hf_ears.last_pcm)
                     if text and not stop():
                         if conn.phone_stt:
                             if _phone_had_it(conn, hf_ears.last_span):
