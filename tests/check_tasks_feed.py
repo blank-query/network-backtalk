@@ -4,7 +4,8 @@
 # where require_token refuses it without one (wrong one: 4401); every
 # device gets who this is and the task list on hello, and the list again
 # when it changes; cooking steps; pushed face state; a peer passes a grant
-# to a connected device by name; revoking a token locks it out again.
+# to a connected device by name; revoking a token locks it out again
+# (4403 "revoked", the only close a device forgets an assistant on).
 import asyncio, hashlib, json, os, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import websockets
@@ -143,7 +144,10 @@ async def main():
     os.replace(TOK, grant.tokens_path(cfg))
     br.tokens_file = grant.tokens_path(cfg)
     assert "revoked 1" in grant.revoke(cfg, "Phone")
-    assert await refused({"type": "hello", "device_id": "pix", "device_token": tok}) == 4401
+    # only a revoke says 4403 (the device forgets); anything else stays 4401
+    assert await refused({"type": "hello", "device_id": "pix", "device_token": tok}) == 4403
+    assert await refused({"type": "hello", "device_id": "pix", "device_token": "nope"}) == 4401
+    assert "revoked 0" in grant.revoke(cfg, "Phone")
     a = grant.assistant({"name": "Jarvis", "peer_name": "Desktop Jarvis", "lan_url": "ws://h:8792"})
     assert a["id"] == "desktop-jarvis" and a["url"] == "ws://h:8792", a
     srv.cancel()
