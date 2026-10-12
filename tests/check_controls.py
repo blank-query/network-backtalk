@@ -1,21 +1,31 @@
-# Run: BACKTALK_LOG=/tmp/bt-check.log .venv/bin/python tests/check_controls.py
+# Run: .venv/bin/python tests/check_controls.py (config, signals, and log in a temp dir)
 # Self-check: the three controls (the Bridge Protocol note). A press only
 # queues (no interrupt reaches the brain or the bridge's control hook);
 # "interrupt" and "abort" frames reach it; the talk key's pause holds local
 # playback without dropping a sample and resumes it; the abort's answer
 # parser; the brain's abort tools: stop_task per task, the SDK interrupt
 # only for "everything"; Friday's brain maps stop_task to subagent.interrupt.
-import asyncio, json, os, sys, threading, time
+# The read-back ends in how to answer; a turn nobody asked for holds its
+# speech while the abort menu is open or sir is talking into its device.
+import asyncio, json, os, sys, tempfile, threading, time
+tmp = tempfile.mkdtemp(prefix="bt-controls-")
+with open(os.path.join(tmp, "backtalk.json"), "w") as f:
+    json.dump({"agent_dir": tmp, "signals_dir": tmp}, f)
+os.environ.update(BACKTALK_CONFIG=os.path.join(tmp, "backtalk.json"),
+                  BACKTALK_LOG=os.path.join(tmp, "backtalk.log"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
+from claude_agent_sdk import ResultMessage
+from claude_agent_sdk.types import StreamEvent
 from backtalk import brain as B, mouth as M
 from backtalk.brain_hermes import HermesClient
-from backtalk.main import abort_pick, abort_step, console_match, barges_in
+from backtalk.main import (abort_pick, abort_step, abort_readback, console_match, barges_in,
+                           hold_reason, ABORT_WAIT_S, NAME)
 from backtalk.web import BrowserBridge, Conn
 
 # ---- the abort's answer
 tasks = ["Research the oil filter prices", "Build the watch release", "a background task"]
-for said, want in [("Everything.", "all"), ("Jarvis, everything", "all"), ("stop all of them", "all"),
+for said, want in [("Everything.", "all"), (f"{NAME}, everything", "all"), ("stop all of them", "all"),
                    ("Never mind.", "none"), ("No.", "none"), ("Number two.", 1), ("the first one", 0),
                    ("3", 2), ("Stop the watch build", 1), ("oil filter one", 0),
                    ("banana", None), ("seven", None), ("", None)]:
@@ -29,14 +39,31 @@ for said, want in [("two", ("ask", 1)), ("app keeps keys", ("ask", 1)), ("everyt
                    ("never mind", ("none", None)), ("what's the weather like", ("cancel", None))]:
     assert abort_step(said, helpers) == want, (said, abort_step(said, helpers), want)
 # the confirmation: only a yes stops; no leaves it; anything else is a message
-assert abort_step("Yes.", helpers, 1) == ("do", 1) and abort_step("Jarvis, yes", helpers, "all") == ("do", "all")
+assert abort_step("Yes.", helpers, 1) == ("do", 1) and abort_step(f"{NAME}, yes", helpers, "all") == ("do", "all")
 assert abort_step("No.", helpers, 1) == ("none", None)
 assert abort_step("two app keeps keys", helpers, 1) == ("cancel", None)
 # no background tasks: "Stop it?" was the question, so yes or everything stops the turn
 assert abort_step("yes", []) == ("do", "all") and abort_step("everything", []) == ("do", "all")
 assert abort_step("one", []) == ("cancel", None)
-assert console_match("Jarvis, abort.") == "abort" and console_match("abort") is None
-assert barges_in("Jarvis, abort", [])
+assert console_match(f"{NAME}, abort.") == "abort" and console_match("abort") is None
+assert barges_in(f"{NAME}, abort", [])
+# the read-back ends in how to answer (2026-10-11: a bare list left sir guessing)
+assert abort_readback(helpers).endswith("Say a number, everything, or never mind.")
+assert abort_readback(helpers[:1]).endswith("Stop it? Yes or no.")
+assert abort_readback([]).endswith("Stop it? Yes or no.")
+assert abort_step("yes", helpers[:1], 0) == ("do", 0), "one task: the read-back is the confirm"
+# what holds a turn nobody asked for: the open menu (until it times out), sir talking
+class C: recording = capturing = False
+class S: conn = C()
+idle = {"brain": None, "at": 0.0}
+assert hold_reason(idle, S()) is None and hold_reason(idle, None) is None
+assert hold_reason({"brain": 1, "at": time.monotonic()}, S()) == "the abort menu is open"
+assert hold_reason({"brain": 1, "at": time.monotonic() - ABORT_WAIT_S - 1}, S()) is None, "no timeout"
+S.conn.recording = True
+assert hold_reason(idle, S()) == "sir is talking"
+S.conn.recording, S.conn.capturing = False, True
+assert hold_reason(idle, S()) == "sir is talking"
+assert hold_reason(idle, None, mic_capturing=True) == "sir is talking"
 
 
 class Bus:
@@ -127,6 +154,53 @@ async def main():
     m.shut_up(); await asyncio.sleep(0.2)
     assert out.got == [], f"a stop while paused played audio: {out.got}"
     m.resume()
+
+    # ---- a turn nobody asked for waits for the hold, then speaks; a dispatched one never waits
+    said = []
+    class Mouth:
+        speaking = False
+        def say_chunk(s, text, directions=None, sink=None):
+            if text: said.append(text)
+        def __getattr__(s, n): return lambda *a, **k: None
+    b = B.WarmBrain(mouth=Mouth(), bus=Bus(), persist=False)
+    b._tally = b._remember_session = lambda *a, **k: None
+    async def nop(): pass
+    b._pull_rate_limits = nop
+    b._client = c = Client()
+    why = ["the abort menu is open"]
+    b.hold = lambda sink: why[0]
+    b._start_reader()
+    def ev(text): return StreamEvent(uuid="u", session_id="s", event={
+        "type": "content_block_delta", "delta": {"type": "text_delta", "text": text}})
+    res = ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1,
+                        is_error=False, num_turns=1, session_id="s")
+    for m in (ev("The helper finished. "), ev("All done."), res):
+        c.q.put_nowait(m)
+    await asyncio.sleep(0.6)
+    assert said == [], f"spoke over the abort menu: {said}"
+    why[0] = "sir is talking"
+    await asyncio.sleep(0.4)
+    assert said == [], f"spoke over sir: {said}"
+    why[0] = None
+    await asyncio.sleep(1.2)
+    assert said and said[0] == "The helper finished.", f"a released turn must speak: {said}"
+    said.clear()
+    why[0] = "the abort menu is open"
+    b.ask("Answer me.", remote_sink=None)
+    for m in (ev("Here you are. "), res):
+        c.q.put_nowait(m)
+    await asyncio.sleep(0.6)
+    assert said == ["Here you are."], f"a dispatched turn was held: {said}"
+    # an abort's "everything" while one is held drops it, never speaks it later
+    said.clear()
+    for m in (ev("Stale report. "), res):
+        c.q.put_nowait(m)
+    await asyncio.sleep(0.4)
+    b._turn_active = True
+    await b.abort_turn()
+    why[0] = None
+    await asyncio.sleep(1.2)
+    assert said == [], f"a held turn spoke after everything stopped: {said}"
     print("controls self-check ok")
 
 asyncio.run(main())
