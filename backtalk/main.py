@@ -1792,6 +1792,9 @@ async def amain():
             and if the device gets busy mid-way (a cooking step, a reply)
             it pauses, then resumes about 3 s back, from a quiet gap
             between words. Paced in real time so the pause lands on time."""
+            if conn.loopback and signals.muted():     # a muted desktop window: not synthesized
+                log(f"[announce] muted, not spoken to {bridge.name_of(conn.id)}: {text[:120]}")
+                return
             sink = bridge.make_sink(conn, low=True)
             chunks = list(synth_stream(text))
             rate = chunks[0][0]

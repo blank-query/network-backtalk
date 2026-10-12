@@ -564,6 +564,14 @@ class Mouth:
                 if self._q.empty() and self._speaking.is_set():
                     self._reply_finished(remote_sink)
                 continue
+            if self._muted_for(remote_sink):
+                # muted desktop: no synthesis at all (Friday's narration cost
+                # ~3.6 cores); the text already went out, the directions still fire
+                if directions:
+                    _fire_directions(directions, remote_sink, _phone_frames(directions), self.bus)
+                if self._q.empty():
+                    self._reply_finished(remote_sink)
+                continue
             self._stop.clear()
             self._speaking.set()
             self.ducker.speech_start()
@@ -574,6 +582,18 @@ class Mouth:
             finally:
                 if self._q.empty():
                     self._reply_finished(remote_sink)
+
+    def _muted_for(self, remote_sink) -> bool:
+        """The desktop is muted (signals.muted) and this audio would only
+        sound here: this machine's own turn, or one from a device on this
+        machine (the face window, the terminal chat). A device elsewhere
+        that asked still gets its reply; a session that owns one device
+        (local False) is never muted."""
+        from backtalk import signals
+        if not self.local or not signals.muted():
+            return False
+        conn = getattr(remote_sink, "conn", None)
+        return remote_sink is None or bool(getattr(conn, "loopback", False))
 
     def _reply_finished(self, remote_sink):
         """The reply has genuinely stopped talking, as opposed to the gap
@@ -645,7 +665,8 @@ class Mouth:
         say_chunk). Its own send failures are its problem, never
         ours, a dead browser socket must never take down the local
         output stream below."""
-        local_on = self.local and (bool(CFG.get("web", {}).get(
+        from backtalk import signals
+        local_on = self.local and not signals.muted() and (bool(CFG.get("web", {}).get(
             "local_playback_on_remote_turn", True)) or remote_sink is None)
         phone = _phone_frames(directions)   # before this sentence's own synthesis
         gen = synth_stream(sentence)
