@@ -111,6 +111,7 @@ async def main():
         t = await recv(ws, "tasks")
         assert t["running"] == [{"text": "write the panel"}, {"text": "Build the watch"},
                                 {"text": "npm run dev"}], t
+        assert t["background"] == 2, t      # the to-do item isn't a background task
         assert t["waiting"] == [{"text": "pick a frame color"}] and t["todo"] == [], t
         assert switched == ["pix"], switched
         st = await recv(ws, "state")

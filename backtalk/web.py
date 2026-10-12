@@ -179,7 +179,10 @@ Wire protocol, deliberately tiny:
                                              background tasks, each {"text"};
                                              "review" (finished, awaiting
                                              review) and "done" (accepted)
-                                             only from todo_txt
+                                             only from todo_txt; "background":
+                                             how many of "running" are
+                                             background tasks (the rest are
+                                             to-do items being worked)
   text frame  {"type": "cook", "steps":     server -> client: a cooking
                [...], "current": n}          session's steps (<<steps>>);
                                              no steps = cooking is over
@@ -821,7 +824,9 @@ class BrowserBridge:
                     "done": "done"}.get(it.get("state"), "todo")
             out[kind].append({"text": str(it.get("text", ""))[:200]})
         try:
-            out["running"] += self.task_source() if self.task_source else []
+            bg = self.task_source() if self.task_source else []
+            out["running"] += bg
+            out["background"] = len(bg)     # the face's task count: Interrupt shows while > 0
         except Exception:
             pass
         return out
