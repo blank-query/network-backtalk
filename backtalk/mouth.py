@@ -567,8 +567,6 @@ class Mouth:
             self._stop.clear()
             self._speaking.set()
             self.ducker.speech_start()
-            self.bus.static_stop()     # thinking sound dies when speech starts
-            self.bus.set_state("speaking")
             try:
                 self._play_stream(sentence, directions, remote_sink=remote_sink)
             except Exception as e:
@@ -688,13 +686,23 @@ class Mouth:
             if directions:
                 _fire_directions(directions, remote_sink, phone, self.bus)
 
+            started = False
+
             def _write(pcm):
+                nonlocal started
                 for i in range(0, len(pcm), block):
                     while out is not None and not self._go.wait(0.05):
                         if self._stop.is_set():
                             return False
                     if self._stop.is_set():
                         return False
+                    if not started:
+                        # "speaking" marks the first audio going out, not
+                        # synthesis starting (2026-10-11: faces led the voice
+                        # by seconds under load); thinking and its sound until then
+                        started = True
+                        self.bus.static_stop()
+                        self.bus.set_state("speaking")
                     block_pcm = pcm[i:i + block]
                     if out is not None:
                         out.write(block_pcm)   # blocks in real time on its own
