@@ -131,6 +131,16 @@ def identify(e: np.ndarray, device: str) -> tuple[str | None, float]:
     return who, best
 
 
+def speaker_tag(e: np.ndarray | None, device: str, owner: str | None = None) -> tuple[str, str | None]:
+    """The agent's speaker tag for a print (None: too short, or prints off),
+    and the name it matched. Only "voice: <name> <score>" is a voiceprint
+    match (what the Home Assistant change rule checks); a device owner's
+    name alone ("sir, voice: unknown") is not."""
+    who, score = identify(e, device) if e is not None else (None, 0.0)
+    v = f"voice: {who} {score:.2f}" if who else ("voice: unknown" if e is not None else "voice: none")
+    return (f"{owner}, {v}" if owner and who != owner else v), who
+
+
 def speakers(pcm: np.ndarray, device: str) -> list[str]:
     """Every enrolled person (not ignore_voices) clearly heard in this
     audio, judging each WINDOW_S slice on its own, in order of first
@@ -181,6 +191,11 @@ if __name__ == "__main__":
     assert identify(w, "echo")[0] is None           # below the threshold
     m = (a + b) / np.linalg.norm(a + b)
     assert identify(m, "echo")[0] is None           # too close to call
+    assert speaker_tag(a, "echo") == ("voice: sir 1.00", "sir")
+    assert speaker_tag(a, "phone", "sir") == ("voice: sir 1.00", "sir")
+    assert speaker_tag(c, "phone", "sir") == ("sir, voice: unknown", None)   # the owner's phone, a stranger
+    assert speaker_tag(None, "phone", "sir") == ("sir, voice: none", None)
+    assert speaker_tag(w, "echo")[0] == "voice: unknown"
     j = rng.normal(size=192); j /= np.linalg.norm(j)
     for _ in range(3):
         add("desktop jarvis", "phone", j)

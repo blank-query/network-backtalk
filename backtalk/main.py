@@ -1395,19 +1395,19 @@ async def amain():
                 # Learn only a voice that already matches the owner (from an
                 # enrollment, or earlier matches): phones get handed around,
                 # and someone else's voice must never become the owner's.
-                if e is not None and voiceprint.identify(e, conn.id)[0] == owner:
+                tag, who = voiceprint.speaker_tag(e, conn.id, owner)
+                if who == owner:
                     voiceprint.add(owner, conn.id, e)
-                return owner
-            if not voiceprint.enabled():
-                return None
+                return tag
             last = getattr(conn, "last_who", None)
             if e is None:
-                return last[0] if last and time.monotonic() - last[1] < 120 else None
-            who, score = voiceprint.identify(e, conn.id)
-            log(f"[voice] {who or 'unknown'} ({score:.2f}) on {bridge.name_of(conn.id)}")
+                return (f"{last[0]}, voice: none" if last and time.monotonic() - last[1] < 120
+                        else "voice: none")
+            tag, who = voiceprint.speaker_tag(e, conn.id)
+            log(f"[voice] {tag} on {bridge.name_of(conn.id)}")
             if who:
                 conn.last_who = (who, time.monotonic())
-            return who or "voice unknown"
+            return tag
 
         def _crosstalk(conn, pcm, text) -> list | None:
             """The enrolled voices in a hands-free clip (for barges_in), or
@@ -1910,8 +1910,9 @@ async def amain():
             bridge.on_file_get = _file_get
             bridge.on_reopen = lambda conn, path: _show(path, bridge.make_sink(conn), button=False)
             bridge.on_text = lambda conn, t, spoken=False: hf_q.put_nowait(
-                (conn, t, "spoken" if spoken else True,
-                 bridge.devices().get(conn.id, {}).get("owner"), []))
+                (conn, t, "spoken" if spoken else True,     # text only: no voiceprint
+                 ", ".join(filter(None, [bridge.devices().get(conn.id, {}).get("owner"),
+                                         "voice: none"])), []))
             bridge.devices_file = os.path.join(CFG["agent_dir"], ".backtalk", "devices.json")
             bridge.update_dir = os.path.join(CFG["agent_dir"], ".backtalk", "app")
             os.makedirs(os.path.dirname(bridge.devices_file), exist_ok=True)
