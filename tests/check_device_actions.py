@@ -4,7 +4,8 @@
 # device frame reaches it as a numbered phone frame, and the answer with
 # that id goes back to the peer (not into a turn), a phone_result without
 # an id still starts a turn; a device with no caps, or not connected, is
-# refused; the devices list. Timers: add, list, cancel, due.
+# refused, a frame with its own "id" is refused, and edit or delete to an
+# app without "v" in its caps; the devices list. Timers: add, list, cancel, due.
 import asyncio, json, os, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import websockets
@@ -60,6 +61,19 @@ async def main():
         r = await device.ask(url, "peer-secret", "Pi Jarvis",
                              {"type": "device", "device": "Garage", "frame": {"do": "ring"}})
         assert r["ok"] is False and "isn't connected" in r["text"], r
+        # a frame's own "id" would be clobbered by the request number: refused, never sent
+        r = await device.ask(url, "peer-secret", "Pi Jarvis",
+                             {"type": "device", "device": "Pixel 8 Pro", "frame": {"do": "reply", "id": 2, "text": "x"}})
+        assert r["ok"] is False and '"key"' in r["text"], r
+        # edit or delete by "event" only to an app whose caps carry "v" (74 on)
+        r = await device.ask(url, "peer-secret", "Pi Jarvis",
+                             {"type": "device", "device": "Pixel 8 Pro", "frame": {"do": "delete", "event": 5}})
+        assert r["ok"] is False and "too old" in r["text"], r
+        try:
+            await recv(pix, "phone", 0.3)
+            raise AssertionError("a refused frame reached the device")
+        except asyncio.TimeoutError:
+            pass
         r = await device.ask(url, "peer-secret", "Pi Jarvis", {"type": "devices"})
         assert {"Pixel 8 Pro", "Kitchen"} <= set(r["connected"]), r
         # an old-style result (no id): still a turn

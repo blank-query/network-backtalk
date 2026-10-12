@@ -191,7 +191,9 @@ Wire protocol, deliberately tiny:
   DEVICE ACTIONS (device.py, Pi Jarvis's tool): an app's hello carries
   "caps" {"role", "actions": [...]}, kept in devices.json. A peer's
   {"type": "device", "device": name, "frame": {"do": ...}} goes to that
-  device as a phone frame with a numbered "id"; its phone_result echoes
+  device as a phone frame with a numbered "id" (so a frame carrying its
+  own "id" is refused; edit and delete name the event as "event", only
+  to apps whose caps carry "v", 74 on); its phone_result echoes
   the id and comes back to the peer as {"type": "device_result", "ok",
   "text"} instead of starting a turn (no answer in DEVICE_WAIT_S: ok
   false). {"type": "devices"} answers {"type": "devices", "connected":
@@ -778,6 +780,13 @@ class BrowserBridge:
             ok, text = False, f"{name!r} isn't connected"
         elif not (self.devices().get(conn.id, {}).get("caps") or {}).get("actions"):
             ok, text = False, f"{name!r} runs an app too old for device actions (it lists none)"
+        elif "id" in frame:
+            # the frame's "id" would be overwritten by this request's number
+            ok, text = False, ('"id" is the bridge\'s own: reply takes "key" (or "app" and "to"), '
+                               'edit and delete take "event"; nothing was sent')
+        elif frame.get("do") in ("edit", "delete") and "v" not in self.devices()[conn.id]["caps"]:
+            # apps before 74 read the event from "id", which here is the request number
+            ok, text = False, f"{name!r} runs an app too old to {frame['do']} events through the tool"
         else:
             self._next_id += 1
             rid = str(self._next_id)
