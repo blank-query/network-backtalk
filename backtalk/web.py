@@ -121,6 +121,9 @@ Wire protocol, deliberately tiny:
                                              phone transcribed itself (on-
                                              device push to talk): treated
                                              as speech, not typing
+  text frame  {"type": "log", "text": ...}   client -> server: the app's
+                                             own report (a playback
+                                             error), written to the log
   text frame  {"type": "line", "who":       server -> client: the
                "you"|"jarvis", "text": ...}  conversation as text, this
                                              device's turns only (a
@@ -578,6 +581,9 @@ class Conn:
                     # waiting for the person, 3 cancelled, others failed)
                     log(f"[app] {self.bridge.name_of(self.id)} install status "
                         f"{data.get('code')} {str(data.get('message') or '')[:200]}")
+                elif kind == "log":
+                    # the app's own report (a playback error, the speech track's route)
+                    log(f"[app] {self.bridge.name_of(self.id)}: {str(data.get('text') or '')[:300]}")
                 elif kind == "file_get" and self.bridge.on_file_get is not None:
                     asyncio.ensure_future(self.bridge.on_file_get(self, str(data.get("path") or "")))
                 elif kind == "app_get":
