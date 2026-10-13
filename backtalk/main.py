@@ -1729,7 +1729,7 @@ async def amain():
                     b = await _new_session(conn, _SESSION_PROMPT.format(
                         purpose=a.get("purpose", "?"), device=name))
                     sessions[cid] = b
-                    if a.get("hands_free"):
+                    if a.get("hands_free") or "cook" in str(a.get("purpose", "")).lower():
                         # hands busy (cooking): open mic, no idle timeout,
                         # until the session ends and the old mode returns
                         hf_locked[cid] = bool(conn.listening and not conn.listen_muted)
@@ -1938,6 +1938,7 @@ async def amain():
             for c in conns:
                 if c.listening and not getattr(c, "capturing", False) \
                         and c.id not in hf_locked \
+                        and c.id not in sessions \
                         and now - getattr(c, "active", now) > limit:
                     bridge.set_listening(c, False)
                     log(f"[web] hands-free timed out for {str(c.id)[:8]}")
