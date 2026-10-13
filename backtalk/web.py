@@ -80,6 +80,16 @@ Wire protocol, deliberately tiny:
   text frame  {"type": "hands_free",        browser -> server: switch
                "on": b, "muted": b}          hands-free on, paused, or off
                                              for this tab, silently
+  text frame  {"type": "hands_free_timeout",  server -> client: the agent
+               "on": b}                      switched this device's
+                                             hands-free idle timeout
+                                             (<<control timeout_off>>);
+                                             the app sets its own switch
+                                             to match and sends its caps.
+                                             The server's record is the
+                                             caps' "hf_timeout" (false:
+                                             never times out), kept in
+                                             devices.json
   text frame  {"type": "image", "data": b64}  client -> server: a shared
                                              JPEG (the app's share
                                              target); acked with
@@ -1066,6 +1076,22 @@ class BrowserBridge:
             f" for {str(conn.id)[:8]}")
         if on and self.on_listen is not None:
             self.on_listen(conn)
+
+    def times_out(self, conn: Conn) -> bool:
+        """Does this device's hands-free time out? Its caps' "hf_timeout"
+        (the app's switch, or the agent's <<control timeout_off>>)."""
+        return ((self.devices().get(conn.id, {}).get("caps") or {}).get("hf_timeout")) is not False
+
+    def set_hf_timeout(self, conn: Conn, on: bool):
+        """The agent switched this device's hands-free timeout: recorded in
+        its caps, as the app's own switch is, and sent to the device so the
+        switch shows it."""
+        caps = dict(self.devices().get(conn.id, {}).get("caps") or {})
+        caps["hf_timeout"] = on
+        self.saw(conn, None, caps)
+        conn.active = time.monotonic()
+        asyncio.ensure_future(conn.ws.send(json.dumps({"type": "hands_free_timeout", "on": on})))
+        log(f"[web] hands-free timeout {'on' if on else 'off'} for {str(conn.id)[:8]}")
 
     # ---- device names: "the kitchen" is the Echo Show. A JSON file of
     # {device_id: {"name", "model", "seen"}}; a new device is named after

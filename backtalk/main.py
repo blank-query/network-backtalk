@@ -38,6 +38,9 @@ called auto-approve, a different axis than the microphone on purpose).
 And with permission_mode "ask" (the default), gated tool calls ASK OUT
 LOUD and your spoken yes or no decides them; any other answer is
 passed back to the agent as the reason.
+The agent can flip the same settings itself (all but permissions and
+abort) when asked in any words, with a <<control VERB>> tag in its
+reply; see CONTROL_VERBS.
 
 Flags:
   --open-mic   start in hands-free listening for this session (the
@@ -363,8 +366,9 @@ def make_permission_gate(mouth, brain):
     return gate
 
 
-# ---- THE VOICE CONSOLE: session verbs, spoken. Exact phrases only,
-# spoken alone, so ordinary sentences can never trigger them. (Grown
+# ---- THE VOICE CONSOLE: session verbs, spoken. Phrases said alone and
+# led by the name (console_match says how loosely), so ordinary
+# sentences can never trigger them. (Grown
 # from a community member's own build shared in the Discord.)
 CONSOLE_VERBS = {
     "clear":     ("clear the session", "clear the context",
@@ -407,27 +411,89 @@ CONSOLE_VERBS = {
     # The hold on Interrupt, spoken: stop the reply, read back what's
     # running, and stop only what the next answer picks (see abort_pick).
     "abort":     ("abort", "abort everything"),
+    # The hands-free idle timeout, per device (or this machine's mic).
+    "timeout:off": ("hands free timeout off", "turn off the hands free timeout",
+                    "turn the hands free timeout off", "no hands free timeout"),
+    "timeout:on":  ("hands free timeout on", "turn on the hands free timeout",
+                    "turn the hands free timeout on"),
 }
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
+CONSOLE_VERBS.update({f"effort:{lvl}": (f"set effort to {lvl}", f"effort {lvl}", f"set effort {lvl}",
+                                        f"effort to {lvl}", f"set the effort to {lvl}",
+                                        f"slash effort {lvl}") for lvl in _EFFORTS})
+_PHRASES = [(p, verb) for verb, ps in CONSOLE_VERBS.items() for p in ps]
+# Said around a command, never part of one: "okay Jarvis, go hands free please".
+_FILLER = {"ok", "okay", "um", "uh", "hey", "oh", "so", "and", "alright", "please", "now",
+           "thanks", "thank", "you"}
+# Never matched loosely (a near miss or a trailing word): wiping the
+# conversation stays an exact phrase.
+_EXACT_ONLY = {"clear"}
+
+
+def _console_tail(words):
+    """The words after the name, with the name repeated ("Jarvis. Jarvis.
+    push to talk") and filler on either end dropped; None when the text
+    doesn't open with the name."""
+    name = NAME.lower().split()
+    k, nm = len(name), " ".join(name)
+
+    def named(i):   # 0.65: "Travis" (0.67) is how Moonshine hears it on the phone
+        return SequenceMatcher(None, " ".join(words[i:i + k]), nm).ratio() >= 0.65
+    i = 0
+    while i < len(words) and words[i] in _FILLER:
+        i += 1
+    if i >= len(words) or not named(i):
+        return None
+    while i < len(words) and named(i):
+        i += k
+    rest = words[i:]
+    while rest and rest[0] in _FILLER:
+        rest = rest[1:]
+    while rest and rest[-1] in _FILLER:
+        rest = rest[:-1]
+    return rest
 
 
 def console_match(text):
     """A console phrase must open with the agent's name ("Jarvis, stop
     listening"), so everyday speech near an open mic can't flip a
-    setting. Close mishearings of the name count ("Javi")."""
-    words, name = _norm_speech(text).split(), NAME.lower().split()
-    head = " ".join(words[:len(name)])
-    if not words or SequenceMatcher(None, head, " ".join(name)).ratio() < 0.75:
+    setting. Forgiving about how Whisper and the phones write it down
+    (2026-10-12, sir said the right phrase and was refused, over and
+    over): punctuation and case never matter ("hands-free" is "hands
+    free"), close mishearings of the name count ("Javi", "Travis"), a
+    repeated name or filler around it is dropped ("okay Jarvis, go hands
+    free please"), and a phrase of three or more words also matches with
+    one stray word after it ("push to talk mode whoa", "push to talk,
+    most") or one small mishearing inside it ("pushed a talk mode").
+    Short phrases ("mute", "pause") and clearing the session stay exact."""
+    rest = _console_tail(_norm_speech(text).split())
+    if not rest:
         return None
-    norm = " ".join(words[len(name):])
-    for verb, phrases in CONSOLE_VERBS.items():
-        if norm in phrases:
+    norm = " ".join(rest)
+    for p, verb in _PHRASES:
+        if norm == p:
             return verb
-    for lvl in _EFFORTS:
-        if norm in (f"set effort to {lvl}", f"effort {lvl}",
-                    f"slash effort {lvl}"):
-            return f"effort:{lvl}"
-    return None
+    if len(rest) > 7:
+        return None
+    loose = [(p, v) for p, v in _PHRASES if len(p.split()) >= 3 and v not in _EXACT_ONLY]
+    shorter = " ".join(rest[:-1])
+    for p, verb in loose:
+        if shorter == p:
+            return verb
+    ratio, verb = max(((SequenceMatcher(None, norm, p).ratio(), v) for p, v in loose),
+                      default=(0, None))
+    return verb if ratio >= 0.9 else None
+
+
+# What <<control VERB>> may do (the agent's own switch, see main's
+# _control). Deliberately NOT here: permissions (stop asking / start
+# asking again stay spoken phrases only), abort, and anything security.
+CONTROL_VERBS = {"hands_free": "micopen", "push_to_talk": "micptt",
+                 "pause": "micmute", "resume": "micopen",
+                 "timeout_on": "timeout:on", "timeout_off": "timeout:off",
+                 "deep": "deep", "fast": "fast", "compact": "compact",
+                 "clear": "clear", "usage": "usage",
+                 **{f"effort_{lvl}": f"effort:{lvl}" for lvl in _EFFORTS}}
 
 
 def wake_mute(verb, wake):
@@ -931,28 +997,32 @@ async def amain():
                          daemon=True).start()
     typed_fut: asyncio.Future | None = None
 
-    async def run_console(verb, sink=None):
+    async def run_console(verb, sink=None, announce=True):
         """One voice-console verb. The current reply was already
         cancelled and awaited by handle(); the pipe gets drained here
         before the command goes out. A verb that blows up must never
         take the whole voice session down with it. `sink` is the
         asking browser's, when a browser asked: the spoken answer goes
-        back there, and the mic verbs act on that browser alone."""
+        back there, and the mic verbs act on that browser alone.
+        announce False (a <<control>> tag): the agent's reply already
+        said it, so only errors and the usage report are spoken."""
         try:
-            await _run_console_inner(verb, sink)
+            await _run_console_inner(verb, sink, announce)
         except Exception as e:
             log(f"[console] {verb} failed: {e}")
             mouth.say("That command hit an error. Check the log.",
                       remote_sink=sink)
             signals.set_state("idle")
 
-    async def _run_console_inner(verb, sink):
+    async def _run_console_inner(verb, sink, announce=True):
         _deny_pending()
         conn = getattr(sink, "conn", None)
 
-
-        def say(text):   # every line below answers whoever asked
-            mouth.say(text, remote_sink=sink)
+        def say(text, always=False):   # every line below answers whoever asked
+            if announce or always:
+                mouth.say(text, remote_sink=sink)
+            else:
+                log(f"[console] (not spoken, the reply said it) {text}")
         say_after = None
         if verb == "clear":
             resp = await brain.command("/clear")
@@ -983,7 +1053,17 @@ async def amain():
         elif verb == "usage":
             resp = ""
             say(_spoken_usage(brain.session,
-                              await brain.context_usage()))
+                              await brain.context_usage()), always=True)
+        elif verb.startswith("timeout:"):
+            resp, on = "", verb == "timeout:on"
+            if conn is not None:
+                bridge.set_hf_timeout(conn, on)
+            else:
+                _MIC["no_timeout"] = not on
+                _MIC["active"] = time.monotonic()
+                log(f"[console] hands-free timeout {'on' if on else 'off'} for this machine's mic")
+            say("Hands-free timeout on." if on else
+                "Hands-free timeout off. Hands-free stays on until you turn it off.")
         elif verb in ("micopen", "micptt", "micmute") and conn is not None:
             resp = ""
             wm = None if conn.listening else wake_mute(
@@ -1118,7 +1198,7 @@ async def amain():
             # (confirmations, API errors); an error outranks our line
             low = (resp or "").lower()
             if resp and ("error" in low or "invalid" in low):
-                say(resp[:160])
+                say(resp[:160], always=True)
                 log(f"[console] {verb} answered: {resp[:120]}")
             else:
                 say(say_after)
@@ -1141,6 +1221,34 @@ async def amain():
         cid = x if isinstance(x, str) else (getattr(x, "conn_id", None)
                                             or getattr(x, "id", None))
         return sessions.get(cid, brain)
+
+    def _control(directions, asker):
+        """<<control VERB>> in a reply: the agent flips a console setting
+        because the person asked for it in words of their own (sir,
+        2026-10-12). The same handlers as the spoken phrases, on the
+        device that asked, once the reply has finished (CONTROL_VERBS).
+        Called on the mouth's thread as the tag's sentence starts. A peer
+        agent's session can't use it."""
+        for d in directions:
+            if not d.startswith("control "):
+                continue
+            key = "_".join(d[8:].lower().replace("-", " ").split())
+            verb = CONTROL_VERBS.get(key)
+            sink = asker.pin() if hasattr(asker, "pin") else asker
+            if verb is None or getattr(getattr(sink, "conn", None), "peer", None):
+                log(f"[console] control tag refused: {d!r}")
+                continue
+            log(f"[console] control tag: {key} -> {verb}, after the reply")
+            asyncio.run_coroutine_threadsafe(_control_after_reply(verb, sink), loop)
+
+    async def _control_after_reply(verb, sink):
+        """Clear and compact must not cut off the reply that announced them:
+        wait for the asking session and the main one to finish talking."""
+        bs = {brain, brain_for(sink)}
+        while any(b.turn_active or b.mouth.speaking for b in bs):
+            await asyncio.sleep(0.3)
+        await run_console(verb, sink, announce=False)
+    DIRECTION_HOOKS.append(_control)
 
     # the abort's open question; "pick" is set while it asks to confirm one
     _ABORT = {"brain": None, "tasks": [], "conn": None, "at": 0.0, "pick": None}
@@ -1942,11 +2050,13 @@ async def amain():
                 if c.listening and not getattr(c, "capturing", False) \
                         and c.id not in hf_locked \
                         and c.id not in sessions \
+                        and bridge.times_out(c) \
                         and now - getattr(c, "active", now) > limit:
                     bridge.set_listening(c, False)
                     log(f"[web] hands-free timed out for {str(c.id)[:8]}")
                     mouth.say("Hands-free off.", remote_sink=bridge.make_sink(c))
             if _MIC["mode"] == "open" and not _MIC.get("capturing") \
+                    and not _MIC.get("no_timeout") \
                     and now - _MIC["active"] > limit:
                 _MIC.update(mode="ptt", muted=False, gen=_MIC["gen"] + 1)
                 _write_config_key("mic_mode", "ptt")
