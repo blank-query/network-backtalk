@@ -59,7 +59,6 @@ Flags:
 Say "goodbye <name>" / "end voice mode" to hang up. Ctrl-C works.
 """
 import asyncio
-import glob
 import json
 import os
 import queue
@@ -83,7 +82,7 @@ from backtalk.ears import (Ears, Session, babble, explain_audio_failure,
 from backtalk.mouth import DIRECTION_HOOKS, Mouth, synth_stream, warm as warm_mouth
 from backtalk.ptt import PTTListener
 from backtalk.vlog import log
-from backtalk.web import (BrowserBridge, ListenStream, beep, chime, image_card, IMAGE_TYPES, NO_IMAGE_MODELS,
+from backtalk.web import (Attachments, BrowserBridge, ListenStream, beep, chime, image_card, IMAGE_TYPES, NO_IMAGE_MODELS,
                           is_text, file_card, file_frames)
 
 NAME = CFG["name"]
@@ -1415,16 +1414,11 @@ async def amain():
             _LAST_SPOKEN[0] = time.monotonic()
         if tags:
             text = f"[{', '.join(tags)}] {text}"
-        sfiles = files.pop(getattr(remote_sink, "conn_id", None), None)
-        if sfiles:
-            text = ("[The user shared a file with this message; open it with the "
-                    "Read tool or whatever suits the type: "
-                    + "; ".join(sfiles) + "] " + text)
-            remote_sink.send({"type": "image_used"})
-        shared = images.pop(getattr(remote_sink, "conn_id", None), None)
+        # what the device shared since its last question, all of it, in order
+        shared = bridge.attach.take(getattr(remote_sink, "conn_id", None)) \
+            if bridge is not None and bridge.attach is not None and remote_sink is not None else ""
         if shared:
-            text = ("[The user shared an image with this message; view it "
-                    f"with the Read tool: {', '.join(shared)}] {text}")
+            text = shared + text
             remote_sink.send({"type": "image_used"})
         b = brain_for(remote_sink)     # its own face channel if a session owns the device
         if not typed:          # typing usually means keep it quiet
@@ -1458,41 +1452,6 @@ async def amain():
         # turns nobody specific asked for (a helper finishing): the device
         # sir last used, never every device.
         bridge: BrowserBridge | None = None
-
-        # Pictures shared from a device (the app's share target), by
-        # device id: saved where the agent can read them, and attached to
-        # that device's next question.
-        images: dict[str, list[str]] = {}
-
-        def _on_image(conn, data: bytes):
-            d = os.path.join(CFG["agent_dir"], ".backtalk", "images")
-            os.makedirs(d, exist_ok=True)
-            for old in sorted(glob.glob(os.path.join(d, "*.jpg")))[:-30]:
-                os.remove(old)   # keep the last 30
-            p = os.path.join(d, time.strftime("%Y%m%d-%H%M%S-")
-                             + f"{time.monotonic_ns() % 10**6}.jpg")
-            with open(p, "wb") as f:
-                f.write(data)
-            images.setdefault(conn.id, []).append(p)
-            log(f"[web] image from {str(conn.id)[:8]}: {p} ({len(data) // 1024} KB)")
-
-        # Any other file shared from a device (share sheet, or the
-        # terminal's + button): saved under .backtalk/files with a safe
-        # name, attached to that device's next question like a picture.
-        files: dict[str, list[str]] = {}
-
-        def _on_file(conn, name: str, mime: str, data: bytes):
-            d = os.path.join(CFG["agent_dir"], ".backtalk", "files")
-            os.makedirs(d, exist_ok=True)
-            for old in sorted(glob.glob(os.path.join(d, "*")))[:-50]:
-                os.remove(old)   # keep the last 50
-            safe = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(name)).strip("._") or "file"
-            p = os.path.join(d, time.strftime("%Y%m%d-%H%M%S-") + safe[:80])
-            with open(p, "wb") as f:
-                f.write(data)
-            files.setdefault(conn.id, []).append(
-                f"{p} ({mime or 'unknown type'}, {max(1, len(data) // 1024)} KB)")
-            log(f"[web] file from {str(conn.id)[:8]}: {p} ({mime}, {len(data) // 1024} KB)")
 
         def _announce(directions, asker):
             """<<announce {"to": name, "text": ...}>>: a chime, then the
@@ -2084,10 +2043,8 @@ async def amain():
         if CFG.get("web", {}).get("enabled"):
             bridge = BrowserBridge(CFG["web"])
             bridge.on_listen = _hf_listen
-            bridge.on_image = _on_image
-            bridge.on_file = _on_file
-            bridge.on_drop = lambda conn: log(f"[web] attachments discarded on {bridge.name_of(conn.id)}: "
-                                              f"{images.pop(conn.id, None)} {files.pop(conn.id, None)}")
+            # pictures and files shared from a device, held for its next question
+            bridge.attach = Attachments(os.path.join(CFG["agent_dir"], ".backtalk"))
             bridge.on_phone_result = _on_phone_result
 
             async def _control(conn, kind):
