@@ -188,6 +188,14 @@ DEFAULTS = {
     # language pipeline (a=American, b=British, e/f/h/i/j/p/z = other
     # languages), so keep voice and accent matched.
     "voice": "bm_lewis",
+    # Keep the Kokoro voice resident so a box under memory pressure never
+    # swaps it out and delays a reply's first sentence by seconds: mlock
+    # its weights (~315 MB) plus a silent model pass after each idle
+    # minute (keeps the rest of the synthesis path hot). The mlock needs
+    # a locked-memory limit that big (LimitMEMLOCK=512M on the unit; a
+    # user unit only gets as high as its user manager's own limit);
+    # without it, it logs why and does the silent pass alone.
+    "lock_voice_model": False,
     # Speech recognition (faster-whisper, local, free).
     # Models: tiny.en / base.en / small.en / medium.en, small.en is the
     # accuracy/speed sweet spot on a normal machine.

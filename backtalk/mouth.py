@@ -190,7 +190,55 @@ def warm():
                 f"voice {CFG['voice']})...")
             _pipe = KPipeline(lang_code=lang)
             log("[mouth] voice ready")
+            if CFG.get("lock_voice_model"):
+                try:
+                    _lock_voice(_pipe)
+                except Exception as e:
+                    log(f"[mouth] voice lock failed: {e}; continuing without")
     return _pipe
+
+
+def _voice_storages(pipe):
+    """(address, bytes) of every weight buffer behind the voice: the
+    model's parameters and buffers plus the voice pack it speaks with."""
+    import torch
+    pipe.load_voice(CFG["voice"])           # lazy in kokoro; load it now
+    tensors = [*pipe.model.state_dict().values(),
+               *(v for v in pipe.voices.values() if isinstance(v, torch.Tensor))]
+    seen = {}
+    for t in tensors:
+        s = t.untyped_storage()
+        if s.nbytes():
+            seen[s.data_ptr()] = s.nbytes()
+    return list(seen.items())
+
+
+def _lock_voice(pipe):
+    """mlock the voice's weights so swap can't take them, when the
+    locked-memory limit allows. The rest of the synthesis path (the
+    text-to-phoneme stage, torch's working memory) is kept hot by the
+    local Mouth's idle silent pass instead (see Mouth._run)."""
+    import ctypes
+    import resource
+    regions = _voice_storages(pipe)
+    total = sum(n for _, n in regions)
+    need = total + os.sysconf("SC_PAGE_SIZE") * 2 * len(regions)  # page straddle
+    soft, hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+    inf = resource.RLIM_INFINITY
+    if soft != inf and soft < need and (hard == inf or hard > soft):
+        soft = need if hard == inf else min(need, hard)
+        resource.setrlimit(resource.RLIMIT_MEMLOCK, (soft, hard))
+    if soft != inf and soft < need:
+        log(f"[mouth] voice lock: locked-memory limit {soft / 2**20:.0f} MB < "
+            f"{need / 2**20:.0f} MB needed (raise LimitMEMLOCK); idle warm-up only")
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mlock.argtypes = (ctypes.c_void_p, ctypes.c_size_t)
+    for addr, n in regions:
+        if libc.mlock(addr, n):
+            err = ctypes.get_errno()
+            raise OSError(err, f"mlock: {os.strerror(err)}")
+    log(f"[mouth] voice model locked in RAM ({total / 2**20:.0f} MB)")
 
 
 def split_sentences(text: str) -> list[str]:
@@ -483,6 +531,16 @@ class Mouth:
         self._out: sd.OutputStream | None = None
         self._out_rate: int | None = None
         self.ducker = Ducker()  # public: PTT ducks for the USER's voice too
+        # lock_voice_model: a silent synth after each idle minute keeps the
+        # whole synthesis path out of swap, not just the mlocked weights.
+        # On this thread ON PURPOSE: glibc gives each thread its own heap
+        # arena, so a pass on another thread warmed the wrong memory
+        # (measured 2026-10-13, process squeezed into swap, then a minute
+        # idle: first audio 1.0 to 4.3 s without it, 2.4 s with only the
+        # weights resident, 3.0 s after a pass on another thread, 0.5 s
+        # with this, 0.45 s never swapped). Common words only, so it never
+        # reaches espeak. Costs about 1 CPU-second per idle minute.
+        self._idle_s = 60 if local and CFG.get("lock_voice_model") else None
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()
 
@@ -546,7 +604,15 @@ class Mouth:
 
     def _run(self):
         while True:
-            item = self._q.get()
+            try:
+                item = self._q.get(timeout=self._idle_s)
+            except queue.Empty:
+                try:
+                    for _ in warm()("Good evening.", voice=CFG["voice"]):
+                        pass
+                except Exception as e:
+                    log(f"[mouth] idle warm-up failed: {e}")
+                continue
             if isinstance(item, tuple) and len(item) == 3:
                 sentence, directions, remote_sink = item
             elif isinstance(item, tuple):
