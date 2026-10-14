@@ -95,17 +95,26 @@ Wire protocol, deliberately tiny:
                                              target); acked with
                                              {"type": "image_ok"}, and
                                              {"type": "image_used"} once
-                                             it rides along with a
-                                             question
-  text frame  {"type": "image_drop"}        client -> server: discard the
-                                             pictures and files shared
-                                             since its last question
+                                             everything waiting rides
+                                             along with a question
   text frame  {"type": "file", "name": ...,   client -> server: any other
                "mime": ..., "data": b64}       shared file (share sheet or
                                              the terminal's +); acked with
                                              {"type": "file_ok", "name"},
                                              then rides along with the
                                              next question like an image
+  BATCHES: a device may have any number of pictures and files waiting,
+  up to ATTACH_MAX (50 MB) together, and its next question takes them
+  all, in the order they came (Attachments). An image or file frame may
+  carry "id" (the client's, echoed in its image_ok / file_ok) and come
+  in parts: "part" from 0 (a 0 starts it over), "last": true on the
+  final one, so no frame nears a client's send limit. Past the cap:
+  {"type": "attach_refused", "id", "reason"}, nothing kept. The
+  identity frame's "attach" (MB) says the bridge takes all this.
+  text frame  {"type": "attach_drop", "id"}  client -> server: discard
+                                             that one waiting item
+  text frame  {"type": "image_drop"}        client -> server: discard
+                                             everything waiting
   text frame  {"type": "phone", "do": ...}  server -> client: a command for
                                              the device that asked (the
                                              agent's <<phone {...}>> tag;
@@ -177,7 +186,9 @@ Wire protocol, deliberately tiny:
                "color", "face",              hello: who this assistant is;
                "controls": 1}                "controls": it takes interrupt
                                              and abort (older bridges: no
-                                             key, clients use interrupt_press)
+                                             key, clients use interrupt_press);
+                                             "attach": 50, it takes batches
+                                             (see BATCHES)
   text frame  {"type": "tasks", "waiting":   server -> client, on hello and
                [...], "running": [...],      every change: the session to-do
                "todo": [...]}                list (backtalk.todo) plus the
@@ -254,12 +265,14 @@ import asyncio
 import audioop
 import base64
 import collections
+import glob
 import hashlib
 import hmac
 import ipaddress
 import json
 import os
 import queue
+import re
 import struct
 import time
 
@@ -292,6 +305,9 @@ IMAGE_TYPES = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp", 
 # update does, so a big file never rides in one frame.
 FILE_MAX = 25 * 2**20
 FILE_CHUNK = 256 * 1024
+# What one device may have waiting to ride along with its next question,
+# all items together (Attachments); the identity frame tells the app.
+ATTACH_MAX = 50 * 2**20
 # devices with no screen for a picture (the hello's "model"): never sent one
 NO_IMAGE_MODELS = ("Desk", "Galaxy Watch")
 
@@ -340,6 +356,70 @@ def file_card(path: str) -> str:
     if size > FILE_MAX:
         raise ValueError(f"{size // 2**20} MB is over the {FILE_MAX // 2**20} MB file limit")
     return f"[file: {os.path.basename(path).translate({91: None, 93: None})}](jarvis-file:{quote(path)}#{size})"
+
+
+class Attachments:
+    """What each device shared since its last question, in the order it
+    came: pictures (saved under <dir>/images) and other files (<dir>/files),
+    held until that device's next question takes them all (take) or the
+    person discards one or all (drop). A device's held items, plus any it is
+    still uploading, never pass ATTACH_MAX together: the app checks too, but
+    this is the trust boundary."""
+
+    def __init__(self, d: str):
+        self.dir = d
+        self.held: dict[str, list[dict]] = {}
+
+    def total(self, dev) -> int:
+        return sum(i["size"] for i in self.held.get(dev, ()))
+
+    def add(self, dev, data: bytes, name: str | None = None, mime: str = "",
+            id: str | None = None, pending: int = 0) -> dict:
+        """Save one item (name None: a picture) and hold it for dev's next
+        question. pending: bytes dev is still uploading besides this one.
+        Over the cap: ValueError, nothing saved."""
+        if self.total(dev) + pending + len(data) > ATTACH_MAX:
+            raise ValueError(f"over the {ATTACH_MAX >> 20} MB total")
+        sub, keep = ("images", 30) if name is None else ("files", 50)
+        d = os.path.join(self.dir, sub)
+        os.makedirs(d, exist_ok=True)
+        waiting = {i["path"] for items in self.held.values() for i in items}
+        for old in sorted(glob.glob(os.path.join(d, "*")))[:-keep]:
+            if old not in waiting:
+                os.remove(old)   # keep the last few, never one still waiting
+        stamp = time.strftime("%Y%m%d-%H%M%S-") + f"{time.monotonic_ns() % 10**6}"
+        if name is None:
+            p = os.path.join(d, stamp + ".jpg")
+        else:
+            safe = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(name)).strip("._") or "file"
+            p = os.path.join(d, stamp + "-" + safe[:80])
+        with open(p, "wb") as f:
+            f.write(data)
+        item = {"id": id, "path": p, "size": len(data), "image": name is None, "mime": mime}
+        self.held.setdefault(dev, []).append(item)
+        return item
+
+    def drop(self, dev, id: str | None = None) -> list[dict]:
+        """Discard one held item by id, or (id None) all of them."""
+        items = self.held.get(dev, [])
+        gone = [i for i in items if id is None or i["id"] == id]
+        self.held[dev] = [i for i in items if i not in gone]
+        return gone
+
+    def take(self, dev) -> str:
+        """Everything dev shared, as the line that goes ahead of its
+        question, in order ("" when nothing is waiting)."""
+        items = self.held.pop(dev, [])
+        if not items:
+            return ""
+        what = ("an image" if items[0]["image"] else "a file") if len(items) == 1 \
+            else f"{len(items)} attachments, in this order"
+        listed = "; ".join(
+            f"{n}. " * (len(items) > 1) + (i["path"] if i["image"] else
+            f"{i['path']} ({i['mime'] or 'unknown type'}, {max(1, i['size'] // 1024)} KB)")
+            for n, i in enumerate(items, 1))
+        return (f"[The user shared {what} with this message; view pictures with the "
+                f"Read tool and open files with whatever suits the type: {listed}] ")
 
 
 def file_frames(path: str):
@@ -404,6 +484,7 @@ class Conn:
         self.audio = True     # False: plays no audio (a hello's "audio": false, the terminal chat)
         self.disconnected = False
         self.recording = False   # this tab's own slot, not bridge-wide
+        self.uploads: dict[str, bytearray] = {}   # attachments arriving in parts, by id
         self.latched = False     # this press is a tap: it ends on silence (latch)
         self.tap_dropped = False # ...and nobody spoke into it
         self.wake = False        # ...and its wake word opened it (the name was said)
@@ -608,22 +689,18 @@ class Conn:
                         fut.set_result(str(data.get("text") or "done"))
                 elif kind == "phone_result" and self.bridge.on_phone_result is not None:
                     self.bridge.on_phone_result(self, str(data.get("text") or ""), bool(data.get("private")))
-                elif kind == "image" and self.bridge.on_image is not None:
-                    try:
-                        self.bridge.on_image(self, base64.b64decode(data.get("data") or ""))
-                        await self.ws.send(json.dumps({"type": "image_ok"}))
-                    except Exception as e:
-                        log(f"[web] shared image dropped: {e}")
-                elif kind == "image_drop" and self.bridge.on_drop is not None:
-                    self.bridge.on_drop(self)
-                elif kind == "file" and self.bridge.on_file is not None:
-                    try:
-                        name = str(data.get("name") or "file")
-                        self.bridge.on_file(self, name, str(data.get("mime") or ""),
-                                            base64.b64decode(data.get("data") or ""))
-                        await self.ws.send(json.dumps({"type": "file_ok", "name": name}))
-                    except Exception as e:
-                        log(f"[web] shared file dropped: {e}")
+                elif kind in ("image", "file") and self.bridge.attach is not None:
+                    await self.attachment(kind, data)
+                elif kind in ("image_drop", "attach_drop") and self.bridge.attach is not None:
+                    # image_drop: everything waiting; attach_drop: the one item "id"
+                    aid = str(data.get("id"))[:64] if kind == "attach_drop" else None
+                    if aid is None:
+                        self.uploads.clear()
+                    else:
+                        self.uploads.pop(aid, None)
+                    gone = self.bridge.attach.drop(self.id, aid)
+                    log(f"[web] attachments discarded on {self.bridge.name_of(self.id) or str(self.id)[:8]}: "
+                        f"{[i['path'] for i in gone]}")
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
@@ -638,6 +715,44 @@ class Conn:
                 self.bridge.end_call(self.call, "disconnected")
             self._released.set()         # unblock a capture awaiting release
             await self._frames.put(None)  # unblock a capture awaiting a frame
+
+    async def attachment(self, kind: str, data: dict):
+        """A shared picture or file, held for this device's next question
+        (bridge.attach). Whole in one frame (apps before 85, the browser's
+        +), or in parts: "id", "part" from 0 (a 0 starts it over), "last",
+        so no frame nears a client's send limit (OkHttp's 16 MB queue).
+        Acked image_ok / file_ok with its "id"; refused, nothing kept, with
+        {"type": "attach_refused", "id", "reason"} when the device's items
+        would pass ATTACH_MAX together."""
+        aid = str(data["id"])[:64] if data.get("id") is not None else None
+        name = None if kind == "image" else str(data.get("name") or "file")[:200]
+        mime = str(data.get("mime") or "")[:100]
+        who = self.bridge.name_of(self.id) or str(self.id)[:8]
+        try:
+            chunk = base64.b64decode(data.get("data") or "")
+            if aid is not None and "part" in data:
+                if data.get("part") == 0:
+                    self.uploads[aid] = bytearray()
+                if aid not in self.uploads:
+                    raise ValueError("its first part never came")
+                self.uploads[aid] += chunk
+                if self.bridge.attach.total(self.id) + sum(map(len, self.uploads.values())) > ATTACH_MAX:
+                    raise ValueError(f"over the {ATTACH_MAX >> 20} MB total")
+                if not data.get("last"):
+                    return
+                chunk = bytes(self.uploads.pop(aid))
+            item = self.bridge.attach.add(self.id, chunk, name, mime, aid,
+                                          pending=sum(map(len, self.uploads.values())))
+        except Exception as e:
+            self.uploads.pop(aid, None)
+            log(f"[web] shared {kind} refused from {who}: {e}")
+            if aid is not None:
+                await self.ws.send(json.dumps({"type": "attach_refused", "id": aid, "reason": str(e)}))
+            return
+        log(f"[web] {kind} from {who}: {item['path']} "
+            f"({mime or ('jpeg' if name is None else 'unknown type')}, {len(chunk) // 1024} KB, {self.bridge.attach.total(self.id) // 1024} KB waiting)")
+        ack = {"type": "image_ok" if name is None else "file_ok", "id": aid}
+        await self.ws.send(json.dumps(ack if name is None else ack | {"name": name}))
 
 
 class BrowserBridge:
@@ -658,8 +773,7 @@ class BrowserBridge:
         # restart returns every browser to push-to-talk.
         self._hf_ids: dict[str, bool] = {}     # ...and whether paused
         self.on_listen = None   # main.py: start a listener for a Conn
-        self.on_image = None    # main.py: (Conn, jpeg bytes), a shared picture
-        self.on_file = None     # main.py: (Conn, name, mime, bytes), any other shared file
+        self.attach: Attachments | None = None   # main.py: what devices shared, held for their next question
         self.on_phone_result = None   # main.py: (Conn, text, private) from a phone command
         self.devices_file = None      # main.py: the device names (see saw)
         self.update_dir = None        # main.py: where a newer app waits (see offer_update)
@@ -667,7 +781,6 @@ class BrowserBridge:
         self.on_heard = None          # main.py: (Conn, text) hands-free words from the phone
         self.on_reopen = None         # main.py: (Conn, path) a card's reopen button
         self.on_file_get = None       # main.py: async (Conn, path) a file card's save
-        self.on_drop = None           # main.py: (Conn) the pictures and files it shared, discarded
         self.on_control = None        # main.py: (Conn, "interrupt" | "abort")
         # Devices a dedicated session owns (main.py's sessions, by id): the
         # main session's broadcasts skip them, so its replies and stops
@@ -832,7 +945,10 @@ class BrowserBridge:
         conn.push = bool(hello.get("push"))
         # "controls": this bridge takes interrupt and abort (the three controls);
         # a client without it falls back to interrupt_press
-        await conn.ws.send(json.dumps(self.identity | {"controls": 1}))
+        # "attach": the MB a device may have waiting (Attachments); a client
+        # without it sends each item whole and discards only all at once
+        await conn.ws.send(json.dumps(self.identity | {"controls": 1}
+                                      | ({"attach": ATTACH_MAX >> 20} if self.attach else {})))
         await conn.ws.send(json.dumps(self._tasks or self.tasks_frame()))
         if conn.id in self._cook:
             await conn.ws.send(json.dumps(self._cook[conn.id]))
