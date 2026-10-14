@@ -413,12 +413,13 @@ class Attachments:
         if not items:
             return ""
         what = ("an image" if items[0]["image"] else "a file") if len(items) == 1 \
-            else f"{len(items)} attachments, in this order"
+            else f"{len(items)} attachments with this message, in this order"
         listed = "; ".join(
             f"{n}. " * (len(items) > 1) + (i["path"] if i["image"] else
             f"{i['path']} ({i['mime'] or 'unknown type'}, {max(1, i['size'] // 1024)} KB)")
             for n, i in enumerate(items, 1))
-        return (f"[The user shared {what} with this message; view pictures with the "
+        what += " with this message" * (len(items) == 1)
+        return (f"[The user shared {what}; view pictures with the "
                 f"Read tool and open files with whatever suits the type: {listed}] ")
 
 
