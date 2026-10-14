@@ -89,7 +89,7 @@ async def main():
         # the next question takes them all, in order, and nothing is left
         line = br.attach.take("pix")
         paths = [i for i in line.split() if i.startswith(D)]
-        assert line.startswith("[The user shared 4 attachments, in this order") and len(paths) == 4, line
+        assert line.startswith("[The user shared 4 attachments with this message, in this order;") and len(paths) == 4, line
         assert "1. " in line and "4. " in line and "(unknown type," in line, line
         assert br.attach.take("pix") == ""
 
