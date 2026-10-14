@@ -96,6 +96,19 @@ ANNOUNCE_LULL_S = 1.5   # quiet needed on a device before an announcement plays
 IGNORED = "\0ignored"    # _who's verdict on another agent's voice
 PHONE_GRACE_S = 3.0      # how long after an utterance the phone's words may lag it
 NOT_A_TAP_S = 1.0        # a browser press held this long that yields nothing gets "I didn't catch that."
+_HELD_LOCK = threading.Lock()   # the phone's held hands-free words (Conn.held)
+
+
+def phone_done(heard_at: float, pi_ended: float, capturing: bool, now: float, quiet_s: float) -> bool:
+    """Are the phone's held hands-free words (the last arrived at heard_at)
+    a finished utterance? Yes once the Pi's own ear, hearing the same
+    stream, has ended an utterance since then; or, if it never caught one
+    (or the words came after its end), once nothing is capturing and the
+    phone has been quiet quiet_s (the open-mic silence wait).
+    ponytail: a listener running far behind the stream can end the
+    previous utterance after the next one's first words arrived and send
+    those early; fine while it keeps up."""
+    return pi_ended >= heard_at or (not capturing and now - heard_at >= quiet_s)
 
 
 def _corrected(text: str) -> str:
@@ -1704,22 +1717,46 @@ async def amain():
             return None
 
         def _heard(conn, text):
-            """Hands-free words the phone transcribed itself: through the
-            same hands-free path as the Pi's own (paused, quit phrases)."""
+            """Hands-free words the phone transcribed itself. Its recognizer
+            closes a segment on every short pause, so they're held until
+            the utterance is over (phone_done), then go as one message
+            through the same hands-free path as the Pi's own (paused,
+            quit phrases). Sent per segment, a mid-thought pause got
+            answered (2026-10-13)."""
             if not conn.listening or conn.disconnected or babble(text):
                 return
-            pcm = conn.heard_pcm()
+            with _HELD_LOCK:
+                conn.held = [*getattr(conn, "held", []), text]
+            seen = conn.heard_at
+            quiet = int(CFG.get("open_mic_silence_ms") or 480) / 1000
 
             def work():
+                while True:
+                    time.sleep(0.1)
+                    if conn.heard_at != seen:
+                        return      # newer words: their thread sends them all
+                    if not conn.listening or conn.disconnected:
+                        with _HELD_LOCK:
+                            conn.held = []
+                        return
+                    ears = getattr(conn, "hf_ears", None)
+                    if phone_done(seen, ears.last_span[1] if ears else 0.0,
+                                  getattr(conn, "capturing", False), time.monotonic(), quiet):
+                        break
+                with _HELD_LOCK:
+                    words, conn.held = " ".join(getattr(conn, "held", [])), []
+                if not words:
+                    return
+                pcm = conn.heard_pcm()
                 who = _who(conn, pcm)
                 if who is IGNORED:
-                    log(f"[web] another agent's voice, dropped: {text[:60]!r}")
+                    log(f"[web] another agent's voice, dropped: {words[:60]!r}")
                     return
-                heard = _crosstalk(conn, pcm, text)
+                heard = _crosstalk(conn, pcm, words)
                 if heard is None:
                     return
                 log("[ears] transcribed on the device (hands-free)")
-                loop.call_soon_threadsafe(hf_q.put_nowait, (conn, _corrected(text), False, who, heard))
+                loop.call_soon_threadsafe(hf_q.put_nowait, (conn, _corrected(words), False, who, heard))
             threading.Thread(target=work, daemon=True).start()
 
         def _phone_had_it(conn, span) -> bool:
@@ -2086,6 +2123,7 @@ async def amain():
             stream, hf_ears = ListenStream(conn), Ears(
                 aggressiveness=int(CFG.get("open_mic_vad_level", 2)),
                 silence_ms=int(CFG.get("open_mic_silence_ms") or 480))
+            conn.hf_ears = hf_ears   # its utterance ends release the phone's held words (_heard)
             # Closed only during this tab's own press. The tab itself
             # goes deaf while it plays the reply or the thinking sound
             # (core.js), which is what actually reaches its mic; gating
