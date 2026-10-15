@@ -137,6 +137,134 @@ _SESSION_PROMPT = (
     "brief. When the purpose is done (the person says so), end that reply with "
     "<<session end>> to hand the device back.")
 
+# A cook-with-me session that ends (cook_fresh_session): asked for its summary,
+# un-spoken, which then goes to the main session (see cook_handoff).
+_COOK_SUMMARY = (
+    "[system] This cooking session is over and is about to be closed. Write a summary "
+    "of it for the main session, plain text, no tags, no tools: what was cooked, the "
+    "recipe used (ingredients with amounts, the steps with their timings), every change "
+    "or substitution made along the way, how the timings actually went, any problems, "
+    "who cooked (sir or ma'am), and anything they said about how it turned out. No "
+    "other names and no personal or identifying details.")
+_COOK_HANDOFF = (
+    "[system] The cook-with-me session on {device} has ended and been closed. Its "
+    "summary: {summary}\nRecord it in your recipe notes now, the way your cooking "
+    "instructions say (no personal or identifying details), and note the rating you owe "
+    "(the dish, who cooked) where it survives a session clear (if the cooking session "
+    "already noted that follow-up, update its item, never add a second). Ask whoever cooked to "
+    "rate the recipe: right away in one short line if it's clearly the moment, else the "
+    "next time you speak with them (then reply <<quiet>> with one line on what you recorded).")
+
+# The idle clear (idle_clear_minutes): the save turn before it, and what the
+# next person to speak brings with them afterwards (see idle_clear).
+IDLE_MARKER = os.path.join(CFG["agent_dir"], ".backtalk", "idle_clear.txt")
+_IDLE_SAVE = (
+    "[system] Idle clear: nobody has spoken for {mins} minutes, so this session is about "
+    "to be cleared completely. Save any unfinished or active task (a follow-up or a "
+    "rating you still owe someone included) where your instructions keep open tasks, "
+    "with enough detail to resume it. Then reply with one short line naming what you "
+    "saved, or the single word: nothing. If you are waiting on the answer to a "
+    "confirmation you asked for, reply with the single word HOLD instead (no clear).")
+_IDLE_RESUME = (
+    "[system] Your session was cleared after a long silence. Saved before the clear: "
+    "{saved}. Answer this message, then ask in one short question whether to resume "
+    "that, naming it; resume only if told to.")
+
+
+def idle_blocker(brain, sessions, dedicated, abort_open=False, capturing=False):
+    """Why the idle clear must wait right now, or None."""
+    if brain.turn_active or brain._ask_queue:
+        return "a turn in flight"
+    if brain._active_tasks:
+        return "a helper running"
+    if brain.mouth is not None and brain.mouth.speaking:
+        return "a reply playing"
+    if dedicated:
+        return "a dedicated session open"
+    if any(b.turn_active for b in sessions.values()):
+        return "a peer turn in flight"
+    if (_PERM["fut"] is not None and not _PERM["fut"].done()) or abort_open \
+            or (_CONFIRM["verb"] and time.monotonic() - _CONFIRM["at"] <= 120):
+        return "a confirmation pending"
+    if capturing:
+        return "someone talking"
+    return None
+
+
+async def idle_clear(brain, state, mins, blocker):
+    """One check of the idle clear (run every 15 s). state["last"] is the
+    last activity (handle() and anything blocking bump it), state["dirty"]
+    whether the session has anything to lose since its last clear. After
+    `mins` of silence: a save turn (captured, never spoken), then a full
+    /clear, and what it saved goes in IDLE_MARKER for the next person to
+    speak. Activity during the save, a failed save, or HOLD: no clear, and
+    the timer re-arms. Returns what happened."""
+    now = time.monotonic()
+    why = blocker()
+    if why:
+        state.update(last=now, dirty=True)
+        return why
+    if not state.get("dirty") or now - state["last"] < mins * 60:
+        return None
+    since = state["last"]
+    log(f"[idle] {mins:g} min silent: save turn before the clear")
+    saved = (await brain.capture(_IDLE_SAVE.format(mins=f"{mins:g}"),
+                                 count_turn=False, timeout=300)).strip()
+    log(f"[idle] save turn replied: {saved[:300]!r}")
+    spoke = state["last"] != since or brain.turn_active or brain._ask_queue
+    state["last"] = time.monotonic()     # whatever happens next, the timer re-arms
+    if spoke:
+        log("[idle] someone spoke during the save: not clearing")
+        return "interrupted"
+    if not saved or saved.startswith("error:"):
+        log("[idle] the save turn failed: not clearing")
+        return "save failed"
+    if saved.upper().strip(" .!").startswith("HOLD"):
+        log("[idle] the session asked to hold: not clearing")
+        return "hold"
+    await brain.command("/clear")
+    brain.clear_tasks()
+    if getattr(brain, "_persist", False):     # a restart must not resume what was just cleared
+        try:
+            os.remove(SESSION_FILE)
+        except OSError:
+            pass
+    if not saved.lower().startswith("nothing"):
+        os.makedirs(os.path.dirname(IDLE_MARKER), exist_ok=True)
+        with open(IDLE_MARKER, "w") as f:
+            f.write(saved[:1500])
+    state.update(last=time.monotonic(), dirty=False)
+    log("[idle] session cleared" + ("" if os.path.exists(IDLE_MARKER) else ", nothing saved"))
+    return "cleared"
+
+
+def take_idle_marker() -> str | None:
+    """The resume question's prompt, once, after an idle clear saved something."""
+    try:
+        with open(IDLE_MARKER) as f:
+            saved = f.read().strip()
+        os.remove(IDLE_MARKER)
+    except OSError:
+        return None
+    return _IDLE_RESUME.format(saved=saved) if saved else None
+
+
+async def cook_handoff(b, main, device, sink):
+    """A cook-with-me session ending: its summary (captured, never spoken)
+    goes to the main session as an internal turn on that device."""
+    for _ in range(600):     # its last turn (the one that said <<session end>>) ends first
+        if not b.turn_active:
+            break
+        await asyncio.sleep(0.1)
+    summary = (await b.capture(_COOK_SUMMARY, count_turn=False, timeout=240)).strip()
+    if not summary or summary.startswith("error:"):
+        log(f"[session] cook summary failed: {summary!r}")
+        summary = ("(none, the cooking session couldn't write one; ask whoever cooked what "
+                   "they made and how it went)")
+    log(f"[session] cook summary from {device}, to the main session: {summary[:300]!r}")
+    main.ask(_COOK_HANDOFF.format(device=device, summary=summary), remote_sink=sink)
+
+
 # What a peer session is told instead (see _peer_turn).
 _PEER_PROMPT = (
     "\n\nTHIS IS A PEER SESSION, not the main one. Every message here comes from "
@@ -1039,6 +1167,7 @@ async def amain():
         if verb == "clear":
             resp = await brain.command("/clear")
             brain.clear_tasks()
+            idle_state["dirty"] = False
             say_after = "Cleared. Fresh slate."
         elif verb == "compact":
             say("Compacting. One moment.")
@@ -1226,6 +1355,8 @@ async def amain():
     sessions: dict = {}           # device id -> WarmBrain
     handed_back: dict = {}        # device id -> a note for the main session's next message from it
     hf_locked: dict = {}          # device id -> was it hands-free before a session locked it on
+    dedicated: dict = {}          # device id -> the purpose of its <<session>> (peer sessions aren't here)
+    idle_state = {"last": time.monotonic(), "dirty": bool(resume_id)}   # see idle_clear; a fresh session has nothing to lose
 
     def brain_for(x):
         """The session that owns this device (a conn, a sink, or an id),
@@ -1329,6 +1460,7 @@ async def amain():
         asking connection, so its reply routes back there instead of
         broadcasting; see brain.py's ask()."""
         log(f"[you]    {text}")
+        idle_state.update(last=time.monotonic(), dirty=True)
         if bridge is not None and (remote_sink is not None or spoke_from is not None):
             # a turn nobody asks for later goes to this device (web.py's
             # pin); the typed console (no sink, no press) is maintenance
@@ -1427,6 +1559,10 @@ async def amain():
             _LAST_SPOKEN[0] = time.monotonic()
         if tags:
             text = f"[{', '.join(tags)}] {text}"
+        resume = take_idle_marker() if brain_for(remote_sink) is brain else None
+        if resume:
+            log("[idle] first contact since the idle clear: the resume question rides along")
+            text = f"{resume}\n{text}"
         # what the device shared since its last question, all of it, in order
         shared = bridge.attach.take(getattr(remote_sink, "conn_id", None)) \
             if bridge is not None and bridge.attach is not None and remote_sink is not None else ""
@@ -1813,6 +1949,15 @@ async def amain():
                         bridge.set_cook(cid, [])
                         handed_back[cid] = "the dedicated session for this device has ended; it's yours again"
                         await loop.run_in_executor(None, lambda: b.mouth.wait_done(timeout=30))
+                        try:
+                            if CFG.get("cook_fresh_session") and "cook" in dedicated.get(cid, "").lower():
+                                conn = next((c for c in list(bridge._conns) if c.id == cid
+                                             and not c.disconnected), None)
+                                await cook_handoff(b, brain, bridge.name_of(cid),
+                                                   bridge.make_sink(conn) if conn else None)
+                        finally:
+                            dedicated.pop(cid, None)
+                            idle_state.update(last=time.monotonic(), dirty=True)
                         await b.stop()
                         b.mouth.shutdown()
                         b.bus.close()
@@ -1833,6 +1978,7 @@ async def amain():
                     b = await _new_session(conn, _SESSION_PROMPT.format(
                         purpose=a.get("purpose", "?"), device=name))
                     sessions[cid] = b
+                    dedicated[cid] = str(a.get("purpose", ""))
                     if a.get("hands_free") or "cook" in str(a.get("purpose", "")).lower():
                         # hands busy (cooking): open mic, no idle timeout,
                         # until the session ends and the old mode returns
@@ -1867,6 +2013,7 @@ async def amain():
             task never holds up the main conversation. The tag comes from
             the server's token check, never from the message text."""
             log(f"[peer] {conn.peer}: {text[:200]}")
+            idle_state["last"] = time.monotonic()
             try:
                 async with peer_lock:
                     if conn.id not in sessions:
@@ -2010,9 +2157,9 @@ async def amain():
                     if text and not stop():
                         if conn.phone_stt:
                             if _phone_had_it(conn, hf_ears.last_span):
-                                log(f"[ears] the phone had it, dropped the Pi's: {text[:60]!r}")
+                                log(f"[ears] the phone's transcript won; the server's copy was dropped: {text[:60]!r}")
                                 continue
-                            log("[ears] the phone heard nothing, using the Pi's transcript")
+                            log("[ears] the phone heard nothing, using the server's transcript")
                         who = _who(conn, hf_ears.last_pcm)
                         if who is IGNORED:
                             log(f"[web] another agent's voice, dropped: {text[:60]!r}")
@@ -2078,6 +2225,24 @@ async def amain():
                 await asyncio.sleep(0.5)
 
         asyncio.create_task(_publish_mic_mode())
+
+        async def _idle_watch():
+            """The idle clear (idle_clear_minutes), checked every 15 s."""
+            while True:
+                await asyncio.sleep(15)
+                mins = float(CFG.get("idle_clear_minutes") or 0)
+                if not mins:
+                    continue
+                conns = list(bridge._conns) if bridge is not None else []
+                try:
+                    await idle_clear(brain, idle_state, mins, lambda: idle_blocker(
+                        brain, sessions, dedicated,
+                        _ABORT["brain"] is not None and time.monotonic() - _ABORT["at"] < ABORT_WAIT_S,
+                        bool(_MIC.get("capturing")) or any(getattr(c, "capturing", False)
+                                                           or getattr(c, "recording", False) for c in conns)))
+                except Exception as e:
+                    log(f"[idle] check failed: {e!r}")
+        asyncio.create_task(_idle_watch())
         if CFG.get("web", {}).get("enabled"):
             bridge = BrowserBridge(CFG["web"])
             bridge.on_listen = _hf_listen
