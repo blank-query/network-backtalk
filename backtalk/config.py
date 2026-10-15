@@ -138,7 +138,7 @@ DEFAULTS = {
     # Hands-free: how long a pause ends your sentence, in milliseconds.
     # Too short and a mid-thought pause sends half a sentence; longer
     # delays every reply by the difference.
-    "open_mic_silence_ms": 1200,
+    "open_mic_silence_ms": 2200,
     # How strict the open mic's speech detector is, 0-3 (webrtcvad).
     # Higher rejects more background noise as "not speech", so a
     # sentence ends when you stop instead of running on through the
