@@ -23,6 +23,7 @@ gives that agent a mouth and ears. The only voice-related instruction it
 adds is the spoken-delivery discipline below, which is about the MEDIUM
 (writing for the ear), never the character.
 """
+import copy
 import json
 import re
 import os
@@ -425,8 +426,9 @@ DISCIPLINE = (
     "repeat a command back as wrong. The ONE exception is permissions: "
     "'stop asking for permission' (then 'confirm') and 'start asking "
     "again' stay spoken phrases only, so for those give the phrase to "
-    "say. Editing backtalk.json only changes the default for the NEXT "
-    "launch."
+    "say. Editing backtalk.json applies a few settings at once (the "
+    "hands-free pause, open_mic_silence_ms, among them; config.py's LIVE) "
+    "and the rest at the NEXT launch."
 )
 
 
@@ -461,7 +463,9 @@ def _env_refs(v):
     return v
 
 
-def load() -> dict:
+def load(strict: bool = False) -> dict:
+    """DEFAULTS with the file merged over them. A file that doesn't parse
+    gives the defaults, or with strict (a live reload) raises."""
     cfg = json.loads(json.dumps(DEFAULTS))          # deep copy
     try:
         user = json.loads(CONFIG_PATH.read_text())
@@ -473,6 +477,8 @@ def load() -> dict:
     except FileNotFoundError:
         pass
     except ValueError as e:
+        if strict:
+            raise
         print(f"[config] backtalk.json is not valid JSON ({e}), "
               f"using defaults", flush=True)
     cfg["agent_dir"] = _expand(cfg["agent_dir"])
@@ -501,6 +507,74 @@ def load() -> dict:
 
 
 CFG = load()
+
+# LIVE CONFIG (2026-10-15). The running voice line checks this file once a
+# second (its mtime and size, never per message; main.py's _config_watch)
+# and on a change re-reads it, updates CFG in place for the keys whose
+# value in the FILE changed (a session-only flip of another key stands),
+# and logs each one: "[config] reloaded: open_mic_silence_ms 2200 -> 1800".
+# A file that fails to parse is logged and the old values kept.
+# What applies at once is in LIVE below: those are read where they're
+# used, or (open_mic_silence_ms) by every open mic and phone on each
+# frame, and pushed to connected apps as {"type": "settings",
+# "open_mic_silence_ms": N} (also sent on hello). Partly live:
+# open_mic_vad_level (the next tap or device hands-free connection; this
+# machine's mic at restart), stt_hotwords (whisper yes, moonshine
+# restart), piper (speaker and pace yes, model restart), show_speed (the
+# SDK readout yes, a speed_log at restart), web (local_playback_on_remote_
+# turn yes, the rest restart). Everything else (model, voice, stt_*,
+# agent_dir, permission_mode, mic_mode, mcp_servers, peers, identity_*,
+# todo_txt, ...) is read once at launch and logs "(at the next restart)".
+LIVE = {"open_mic_silence_ms", "hands_free_timeout_s", "idle_clear_minutes",
+        "cook_fresh_session", "speed", "gain_db", "voiceprint_threshold",
+        "stt_corrections", "stt_save_dir", "max_utterance_s", "moonshine_refresh",
+        "stt_beam_size", "show_usage", "capture_timeout_s", "deep_model", "elevenlabs"}
+
+
+def _stamp():
+    try:
+        st = CONFIG_PATH.stat()
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return None
+
+
+_LOADED = {"cfg": copy.deepcopy(CFG), "stamp": _stamp()}   # what the file last said
+
+
+def _show(v) -> str:
+    """A value for the log: scalars only (a dict may hold a ${VAR} secret)."""
+    if isinstance(v, (int, float, bool)) or v is None or (isinstance(v, str) and len(v) <= 60):
+        return json.dumps(v)
+    return "(changed)"
+
+
+def reload() -> dict:
+    """The file again if it changed since the last look: CFG updated in
+    place, {key: (old, new)} returned; {} when unchanged or unparsable."""
+    stamp = _stamp()
+    if stamp == _LOADED["stamp"]:
+        return {}
+    _LOADED["stamp"] = stamp
+    from backtalk.vlog import log
+    try:
+        new = load(strict=True)
+    except (OSError, ValueError) as e:
+        log(f"[config] {CONFIG_PATH.name} changed but didn't parse, keeping the old values: {e}")
+        return {}
+    old = _LOADED["cfg"]
+    changed = {k: (old.get(k), new.get(k)) for k in old.keys() | new.keys() if old.get(k) != new.get(k)}
+    for k in changed:
+        if k in new:
+            CFG[k] = copy.deepcopy(new[k])
+        else:
+            CFG.pop(k, None)
+    _LOADED["cfg"] = new
+    if changed:
+        log("[config] reloaded: " + "; ".join(
+            f"{k} {_show(a)} -> {_show(b)}" + ("" if k in LIVE else " (at the next restart)")
+            for k, (a, b) in sorted(changed.items())))
+    return changed
 
 # The character half stays in YOUR agent's CLAUDE.md. This is the medium.
 if CFG.get("discipline_append"):

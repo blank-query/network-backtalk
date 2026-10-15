@@ -71,7 +71,7 @@ import time
 
 import numpy as np
 
-from backtalk import signals, voiceprint
+from backtalk import config, signals, voiceprint
 from backtalk.brain import SESSION_FILE, WarmBrain
 from backtalk.config import CFG
 
@@ -1069,8 +1069,7 @@ async def amain():
             resume_id = None
 
     mouth = Mouth()
-    ears = Ears(aggressiveness=int(CFG.get("open_mic_vad_level", 2)),
-                silence_ms=int(CFG.get("open_mic_silence_ms") or 480))
+    ears = Ears(aggressiveness=int(CFG.get("open_mic_vad_level", 2)))   # its pause: open_mic_silence_ms, live
     # can_use_tool needs brain.remote_sink, but brain needs can_use_tool
     # at construction, broken by constructing without it, then setting
     # it once the gate has a real brain to close over.
@@ -2121,8 +2120,7 @@ async def amain():
             if t is not None and t.is_alive():
                 return
             stream, hf_ears = ListenStream(conn), Ears(
-                aggressiveness=int(CFG.get("open_mic_vad_level", 2)),
-                silence_ms=int(CFG.get("open_mic_silence_ms") or 480))
+                aggressiveness=int(CFG.get("open_mic_vad_level", 2)))
             conn.hf_ears = hf_ears   # its utterance ends release the phone's held words (_heard)
             # Closed only during this tab's own press. The tab itself
             # goes deaf while it plays the reply or the thinking sound
@@ -2248,6 +2246,20 @@ async def amain():
                 except Exception as e:
                     log(f"[idle] check failed: {e!r}")
         asyncio.create_task(_idle_watch())
+
+        async def _config_watch():
+            """backtalk.json is live (config.reload, checked each second): a
+            new open_mic_silence_ms goes to every connected app at once."""
+            while True:
+                await asyncio.sleep(1)
+                try:
+                    changed = config.reload()
+                except Exception as e:
+                    log(f"[config] reload failed: {e!r}")
+                    continue
+                if "open_mic_silence_ms" in changed and bridge is not None:
+                    bridge.push_settings()
+        asyncio.create_task(_config_watch())
         if CFG.get("web", {}).get("enabled"):
             bridge = BrowserBridge(CFG["web"])
             bridge.on_listen = _hf_listen
