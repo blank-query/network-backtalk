@@ -242,6 +242,10 @@ Wire protocol, deliberately tiny:
   muted). A tap its wake word opened sends {"type": "latch", "wake":
   true}, so its words count as said after the name ("stop listening"
   alone mutes it: main.py answers {"type": "wake", "muted": b}).
+  SETTINGS: every device (not a peer) is sent {"type": "settings",
+  "open_mic_silence_ms": N} on hello, and again whenever backtalk.json
+  changes it (config.reload): an app's own recognizer ends speech on it.
+  Clients ignore frame types they don't know, so an old app is unaffected.
   text frame  {"type": "listen", "on": b,   server -> browser: hands-
                "muted": b}
                                              free on or off for that
@@ -615,6 +619,8 @@ class Conn:
                     wake = self.bridge.devices().get(self.id, {}).get("wake")
                     if wake is not None and not self.peer:
                         await self.ws.send(json.dumps({"type": "wake", "cfg": wake if isinstance(wake, dict) else {"on": bool(wake)}}))
+                    if not self.peer:
+                        await self.ws.send(json.dumps(self.bridge.settings_frame()))
                     self.bridge.offer_update(self, data.get("version"))
                     if self.bridge._lines.get(self.id):
                         await self.ws.send(json.dumps(
@@ -1077,6 +1083,19 @@ class BrowserBridge:
                     if st != getattr(c, "last_state", None):
                         c.last_state = st
                         self._send(c, st)
+
+    def settings_frame(self) -> dict:
+        """What an app's own recognizer needs from backtalk.json: on hello,
+        and to every device when the file changes (config.reload)."""
+        from backtalk.config import CFG
+        return {"type": "settings", "open_mic_silence_ms": int(CFG.get("open_mic_silence_ms") or 480)}
+
+    def push_settings(self):
+        f = self.settings_frame()
+        for c in list(self._conns):
+            if c.id and not c.peer and not c.disconnected:
+                self._send(c, f)
+        log(f"[config] settings pushed: open_mic_silence_ms {f['open_mic_silence_ms']}")
 
     # ---- peers (see the docstring's PEERS)
 

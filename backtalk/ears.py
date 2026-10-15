@@ -697,12 +697,16 @@ DEFERRED = object()   # listen_once's "captured, not transcribed" (see its defer
 
 
 class Ears:
-    def __init__(self, aggressiveness: int = 2, silence_ms: int = 480):
+    def __init__(self, aggressiveness: int = 2, silence_ms: int | None = None):
         self.vad = webrtcvad.Vad(aggressiveness)
-        self.silence_frames = silence_ms // FRAME_MS
+        self.silence_ms = silence_ms   # None: open_mic_silence_ms, live (config.reload)
         self.last_pcm = None     # the last utterance's audio (voiceprints)
         self.last_span = (0.0, 0.0)   # ...when it began and ended (the stream's t, if it keeps one)
         self.backup = None       # the utterance listen_once returned DEFERRED for, untranscribed
+
+    @property
+    def silence_frames(self) -> int:
+        return int(self.silence_ms or CFG.get("open_mic_silence_ms") or 480) // FRAME_MS
 
     def backup_text(self, use: bool = True) -> str:
         """The DEFERRED utterance: transcribed now (use), or let go."""
