@@ -693,15 +693,30 @@ class Endpoint:
         return None
 
 
+DEFERRED = object()   # listen_once's "captured, not transcribed" (see its defer)
+
+
 class Ears:
     def __init__(self, aggressiveness: int = 2, silence_ms: int = 480):
         self.vad = webrtcvad.Vad(aggressiveness)
         self.silence_frames = silence_ms // FRAME_MS
         self.last_pcm = None     # the last utterance's audio (voiceprints)
         self.last_span = (0.0, 0.0)   # ...when it began and ended (the stream's t, if it keeps one)
+        self.backup = None       # the utterance listen_once returned DEFERRED for, untranscribed
+
+    def backup_text(self, use: bool = True) -> str:
+        """The DEFERRED utterance: transcribed now (use), or let go."""
+        s, self.backup = self.backup, None
+        if s is None:
+            return ""
+        if not use:
+            s.cancel()
+            return ""
+        text = s.finish()
+        return "" if babble(text) else text
 
     def listen_once(self, gate=None, timeout_s: float | None = None,
-                    abort=None, stream=None, busy=None) -> str | None:
+                    abort=None, stream=None, busy=None, defer=None) -> str | None:
         """Block until one utterance completes; return transcript
         (or None on timeout). An `abort` callable is checked every
         frame; returning True closes the mic and returns None, which
@@ -709,7 +724,10 @@ class Ears:
         down promptly instead of after one more utterance. `stream`
         replaces the local mic with anything that has the same
         context-manager read(n) -> (int16 (n, 1), overflowed) shape:
-        a browser's hands-free stream (web.ListenStream)."""
+        a browser's hands-free stream (web.ListenStream). While `defer()`
+        is True (a phone transcribing the same stream itself) nothing is
+        transcribed: the utterance is kept as self.backup and DEFERRED
+        comes back, for backup_text() if the phone's words never come."""
         frames: list[np.ndarray] = []
         ring: list[np.ndarray] = []   # pre-roll so the first syllable survives
         try:
@@ -750,7 +768,7 @@ class Ears:
                             frames = ring[:]
                             silence_run = 0
                             if busy: busy(True)   # first, so the rings show at once
-                            session = Session(vad=True)
+                            session = Session(vad=True, defer=bool(defer and defer()))
                             for f in frames:
                                 session.add(f)
                     else:
@@ -773,9 +791,12 @@ class Ears:
                                 if busy: busy(False)
                                 continue
                             self.last_span = (began, getattr(stream, "t", None) or time.monotonic())
-                            text = session.finish(); session = None
                             self.last_pcm = np.concatenate(frames)
                             _log_capture(self.last_pcm, capped)
+                            if defer and defer():
+                                self.backup, session = session, None
+                                return DEFERRED
+                            text = session.finish(); session = None
                             if babble(text):
                                 return ""
                             return text
