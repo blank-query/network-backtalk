@@ -107,7 +107,7 @@ async def _run():
     assert not conn.listening, "nothing switches mid-reply"
     brain.turn_active = False
     assert await until(lambda: conn.listening), "hands-free on after the reply"
-    assert any(f == {"type": "listen", "on": True, "muted": False} for f in frames)
+    assert await until(lambda: any(f == {"type": "listen", "on": True, "muted": False} for f in frames))
     assert not said, f"no confirmation of its own: {said}"
 
     # clear: only after the reply
