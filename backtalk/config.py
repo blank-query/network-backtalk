@@ -182,6 +182,14 @@ DEFAULTS = {
     # commands like /effort, /clear) before interrupting it. A slow local
     # model wants more.
     "capture_timeout_s": 90,
+    # Minutes of silence on every device (no turn, no helper, no dedicated
+    # session, no pending confirmation) before the main session saves any
+    # unfinished task to the agent's notes and clears itself; the next
+    # person to speak is asked whether to resume it. 0 = never.
+    "idle_clear_minutes": 0,
+    # A cook-with-me session that ends writes a summary of the cook, which
+    # goes to the main session to record and follow up (ask for a rating).
+    "cook_fresh_session": False,
     # The voice (Kokoro, local, free). bm_lewis is the proven default,
     # British male, the butler register. Others: bm_george, bm_daniel,
     # bm_fable, am_michael, af_heart... The first letter picks the
