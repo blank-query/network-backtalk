@@ -77,7 +77,7 @@ from backtalk.config import CFG
 
 if CFG.get("brain") == "hermes":   # Hermes Agent instead of Claude Code (brain_hermes.py)
     from backtalk.brain_hermes import SESSION_FILE, HermesBrain as WarmBrain
-from backtalk.ears import (Ears, Session, babble, explain_audio_failure,
+from backtalk.ears import (DEFERRED, Ears, Session, babble, explain_audio_failure,
                            record_held, reread, warm as warm_ears, Endpoint)
 from backtalk.mouth import DIRECTION_HOOKS, Mouth, synth_stream, warm as warm_mouth
 from backtalk.ptt import PTTListener
@@ -1724,12 +1724,15 @@ async def amain():
 
         def _phone_had_it(conn, span) -> bool:
             """The phone's recognizer hears this stream too: wait until its
-            words for this utterance would have arrived, and say whether
-            they did. Times are arrival times, so a listener running behind
+            words for this utterance arrive, or PHONE_GRACE_S after it ended
+            if they don't, and say whether they did. Times are arrival times, so a listener running behind
             the stream waits less, not wrongly."""
             began, ended = span
-            time.sleep(max(0.0, ended + PHONE_GRACE_S - time.monotonic()))
-            return conn.heard_at >= began - 0.5
+            while conn.heard_at < began - 0.5:
+                if time.monotonic() >= ended + PHONE_GRACE_S:
+                    return False
+                time.sleep(0.05)
+            return True
 
         def _enroll(arg: str, asker):
             """<<enroll {"name": ...}>>: this device's next ENROLL_S
@@ -2104,21 +2107,26 @@ async def amain():
                     try:
                         text = hf_ears.listen_once(stream=stream, gate=gate,
                                                    busy=lambda b: _capturing(conn, b),
-                                                   abort=stop)
+                                                   abort=stop, defer=lambda: conn.phone_stt)
                     except Exception as e:
                         log(f"[web] hands-free listener failed: {e!r}")
                         time.sleep(1)
                         continue
+                    if text is DEFERRED:
+                        # The phone's recognizer hears this stream too; the
+                        # server's copy is only a backup, transcribed only
+                        # if the phone's words never come (rare: 8 in ~200).
+                        had = _phone_had_it(conn, hf_ears.last_span)
+                        if had:
+                            log("[ears] phone transcript used, the backup skipped")
+                        elif not stop():
+                            log("[ears] the phone heard nothing, transcribing the backup")
+                        text = hf_ears.backup_text(not had and not stop())
                     b = brain_for(conn)
                     if text is not None and not stop() and not conn.phone_stt \
                             and (b.turn_active or b.mouth.speaking):
                         text = second_read(text, hf_ears.last_pcm)
                     if text and not stop():
-                        if conn.phone_stt:
-                            if _phone_had_it(conn, hf_ears.last_span):
-                                log(f"[ears] the phone's transcript won; the server's copy was dropped: {text[:60]!r}")
-                                continue
-                            log("[ears] the phone heard nothing, using the server's transcript")
                         who = _who(conn, hf_ears.last_pcm)
                         if who is IGNORED:
                             log(f"[web] another agent's voice, dropped: {text[:60]!r}")
