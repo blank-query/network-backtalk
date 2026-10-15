@@ -511,7 +511,8 @@ class WarmBrain:
                                 ears.take_heard() if ears else None))
         self._dispatch_next()
 
-    async def capture(self, text: str, count_turn: bool = True) -> str:
+    async def capture(self, text: str, count_turn: bool = True,
+                      timeout: float | None = None) -> str:
         """Send `text` and wait for the FULL text reply, un-spoken —
         for console slash commands and the startup warmup ping, the two
         callers that want an answer back as a return value rather than
@@ -525,6 +526,8 @@ class WarmBrain:
         capture that times out is interrupted, not walked away from: an
         orphaned turn kept a slow local model generating for minutes
         with everything queued behind it (Friday's warmup, 2026-10-10)."""
+        while self._capture is not None:   # one at a time (an idle clear's save vs a console command)
+            await asyncio.sleep(0.1)
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         self._capture = fut
@@ -532,7 +535,7 @@ class WarmBrain:
         self._capture_buf = []
         self._turn_active = True
         self._last_main = time.monotonic()
-        limit = float(CFG.get("capture_timeout_s") or 90)
+        limit = float(timeout or CFG.get("capture_timeout_s") or 90)
         try:
             await self._client.query(text)
             deadline = loop.time() + limit
