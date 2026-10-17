@@ -46,6 +46,7 @@ its format (state/state as a bare word, state/wave.json normalized
 
 Every write is wrapped: the bus must never crash the voice line.
 """
+import itertools
 import json
 import os
 import re
@@ -59,6 +60,17 @@ import numpy as np
 from backtalk.config import CFG
 
 _DIR = CFG["signals_dir"]
+# Reply turn ids: every brain turn and every other spoken line gets one,
+# carried with its audio to the devices (the bridge protocol's "turn"), so
+# an Interrupt drops the turn sir actually hears. Seeded from the clock so
+# they keep rising across restarts.
+_TURNS = itertools.count(int(time.time() * 1000))
+
+
+def new_turn() -> int:
+    return next(_TURNS)
+
+
 _STATE_FILE = os.path.join(_DIR, ".voice_state")
 _WAVEFORM_FILE = os.path.join(_DIR, ".voice_waveform")
 _LOADING_PID_FILE = os.path.join(_DIR, ".voice_loading_pid")

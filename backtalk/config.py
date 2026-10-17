@@ -163,6 +163,14 @@ DEFAULTS = {
     # frequently on a stream or a shared screen. Nothing is collected at
     # all while this is false. (Community fix, ai-visualizer issue #1.)
     "show_usage": False,
+    # Connect the main session to Remote Control at every start, so
+    # claude.ai/code, the Claude phone app, and your sessions on other
+    # machines can see and message it (needs a full claude.ai login, not an
+    # API key or a local model). true names it peer_name (else "Desktop
+    # Jarvis"); a string names it that. OFF by default: anyone signed in to
+    # your account can then drive this session, and its transcript syncs
+    # through Anthropic.
+    "remote_control": False,
     # The last model call's speed in the face's corner ("43 tok/s"):
     # generation tokens over streaming time from the SDK's usage. A local
     # model server that logs its own timings can be followed instead with

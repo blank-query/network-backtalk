@@ -30,9 +30,9 @@ assert speakable("Use `jarvis-update` then ```python x```") == "Use jarvis-updat
 assert speakable("Bay #5, -5 degrees, eggs - two.") == "Bay #5, -5 degrees, eggs - two."
 assert speakable("**For next time:** - Get a press.") == "For next time: - Get a press."
 
-m = types.SimpleNamespace(_q=queue.Queue())
+m = types.SimpleNamespace(_q=queue.Queue(), turn=None)
 Mouth.say_chunk(m, "![Pi desktop](shot.png)", ["show shot.png"], None)
-assert m._q.get_nowait() == ("", ["show shot.png"], None)
+assert m._q.get_nowait()[:3] == ("", ["show shot.png"], None)
 Mouth.say(m, "One. ![x. y](z.png) Two.")
 assert [m._q.get_nowait()[0] for _ in range(2)] == ["One.", "Two."] and m._q.empty()
 

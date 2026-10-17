@@ -49,7 +49,12 @@ Wire protocol, deliberately tiny:
                                              Interrupt. The voice stops and
                                              the rest of that reply is
                                              dropped ("stop" back); helpers
-                                             and tools keep running
+                                             and tools keep running. With
+                                             "turn": the turn id the client
+                                             was playing (null: nothing), so
+                                             only that turn is dropped (see
+                                             TURNS); without it the bridge
+                                             estimates
   text frame  {"type": "abort"}             client -> server: Interrupt
                                              held ~2 s (or "<name>, abort"
                                              spoken). As interrupt, then the
@@ -72,7 +77,17 @@ Wire protocol, deliberately tiny:
   text frame  {"type": "stop"}              server -> browser (an
                                              interrupt: discard every
                                              scheduled-but-unplayed
-                                             chunk already sent)
+                                             chunk already sent; with
+                                             "turn": N, a client that
+                                             takes TURNS discards only
+                                             turn N's audio, now and as it
+                                             arrives, and keeps later turns')
+  TURNS (since 2026-10-17): before the first audio of each turn the server
+  sends {"type": "turn", "id": N} (ids rise, across restarts too); every
+  binary frame after it belongs to turn N, until the next. Each reply's
+  "line" frames carry "turn" too. The identity frame says "turns": 1; a
+  client that handles them says "turns": 1 in its hello, reports the turn
+  it is playing in "interrupt", and honours "stop"'s "turn".
   text frame  {"type": "unmute"}            browser -> server: a click
                                              while paused ("stop
                                              listening"); hands-free
@@ -191,7 +206,7 @@ Wire protocol, deliberately tiny:
   pushes {"type": "state", ...} as it changes).
   text frame  {"type": "identity", "name",  server -> client, after every
                "color", "face", "hues",      hello: who this assistant is;
-               "controls": 1}                "controls": it takes interrupt
+               "controls": 1, "turns": 1}    "controls": it takes interrupt
                                              and abort (older bridges: no
                                              key, clients use interrupt_press);
                                              "attach": 50, it takes batches
@@ -298,6 +313,7 @@ import websockets
 from backtalk.vlog import log
 
 RATE = 16000   # must match ears.RATE, the fixed transcribe() contract
+NO_REPORT = object()   # an interrupt that didn't say which turn it heard (TURNS)
 # A tap's endpoint asks the client to release; past this the server ends
 # it itself (a phone waits up to 3.5 s for its own transcript first).
 ENDPOINT_WAIT_S = 6.0
@@ -308,6 +324,7 @@ AGENT_IDS = ("terminal-", "claude-")
 CALL_VOICE_RMS = 500   # a caller frame this loud opens the call at the far end
 CALL_RING_S = 20       # the caller has this long to start talking
 DEVICE_WAIT_S = 120    # a device action's answer (a confirm card waits 90 s for a tap)
+AUDIBLE_SLACK_S = 1.5  # a device's own playout buffer past what was sent (bridge.heard)
 # A <<show>> picture rides in a "show" frame as a markdown data URL. Under
 # this it goes as it is; over it, ffmpeg shrinks it to a JPEG at most
 # IMAGE_SIDE px on its long side. The frame stays under IMAGE_MAX so no
@@ -501,6 +518,8 @@ class Conn:
         self.loopback = False # connected from this machine
         self.face = False     # this machine's own face (a loopback hello with no "model")
         self.audio = True     # False: plays no audio (a hello's "audio": false, the terminal chat)
+        self.turns = False    # its hello's "turns": it reports and drops audio by turn (TURNS)
+        self.turn_sent = None # the turn its audio frames belong to now (TURNS)
         self.disconnected = False
         self.recording = False   # this tab's own slot, not bridge-wide
         self.uploads: dict[str, bytearray] = {}   # attachments arriving in parts, by id
@@ -609,6 +628,7 @@ class Conn:
                     self.id = data.get("device_id") or self.id
                     self.face = self.loopback and not self.peer and not data.get("model")
                     self.audio = data.get("audio") is not False
+                    self.turns = bool(data.get("turns"))
                     self.bridge.saw(self, self.peer or data.get("model"), data.get("caps"))
                     role = self.bridge.devices().get(self.id, {}).get("role")
                     if role and not self.peer:
@@ -683,7 +703,10 @@ class Conn:
                     # no session owns this device: a tap on the orb hangs up
                     self.bridge.end_call(self.call, "hung up")
                 elif kind in ("interrupt", "abort") and self.bridge.on_control is not None:
-                    self.bridge.on_control(self, kind)
+                    # the turn it was playing, if it says (null: nothing); a
+                    # missing or malformed one is left to the bridge's estimate
+                    t = data.get("turn", NO_REPORT)
+                    self.bridge.on_control(self, kind, t if t is None or type(t) is int else NO_REPORT)
                 elif kind == "press":
                     self.wake = False
                     self.bridge._on_press(self, interrupt=False)
@@ -806,7 +829,7 @@ class BrowserBridge:
         self.on_heard = None          # main.py: (Conn, text) hands-free words from the phone
         self.on_reopen = None         # main.py: (Conn, path) a card's reopen button
         self.on_file_get = None       # main.py: async (Conn, path) a file card's save
-        self.on_control = None        # main.py: (Conn, "interrupt" | "abort")
+        self.on_control = None        # main.py: (Conn, "interrupt" | "abort", turn reported or NO_REPORT)
         # Devices a dedicated session owns (main.py's sessions, by id): the
         # main session's broadcasts skip them, so its replies and stops
         # never land on, say, the kitchen mid-recipe.
@@ -815,6 +838,12 @@ class BrowserBridge:
         # that isn't an announcement (make_sink). Announcements wait for a
         # lull and pause when it gets busy again (main.py).
         self.voice_until: dict[str, float] = {}
+        # Per device id: the reply audio sent to it still to play, as
+        # [turn, when it ends] in order (make_sink), held back by its press
+        # pauses (the app buffers while it records). main.py's Interrupt
+        # reads it through heard() when the device doesn't say what it is
+        # playing: a phone can still be sounding a turn that's long over.
+        self.played: dict[str, list] = {}
         # Each device's recent conversation lines, replayed on hello so a
         # reload keeps its terminal. Memory only.
         self._lines: dict[str, collections.deque] = {}
@@ -869,6 +898,47 @@ class BrowserBridge:
                 return self.make_sink(live)
         return self.make_sink(self._recent[0]) if self._recent else None
 
+    def held(self, cid, since):
+        """A press ended: the app paused its playback from `since` until
+        now, so whatever it still had to play ends that much later."""
+        if since is None:
+            return
+        pause = time.monotonic() - since
+        for seg in self.played.get(cid) or []:
+            if seg[1] > since:
+                seg[1] += pause
+
+    def heard(self, cid=None):
+        """The turn a device is most likely playing now, or None when it has
+        played everything (cid None: any device). An estimate from what was
+        sent, at what pace, and its press pauses, for clients that don't
+        report it (TURNS)."""
+        # estimated; a client on TURNS says exactly in its interrupt
+        now = time.monotonic()
+        for k in ([cid] if cid is not None else list(self.played)):
+            segs = self.played.get(k) or []
+            on = next((t for t, end in segs if end > now), NO_REPORT)
+            if on is not NO_REPORT:
+                return on
+            if segs and segs[-1][1] + AUDIBLE_SLACK_S > now:
+                return segs[-1][0]
+        return None
+
+    def _played_out(self, cid, turn, kept: bool):
+        """A stop: the device dropped `turn`'s audio and kept later turns'
+        (`kept`, a client on TURNS), or dropped everything."""
+        segs = self.played.pop(cid, None)
+        if not (kept and segs):
+            return
+        now, prev, cut, out = time.monotonic(), 0.0, 0.0, []
+        for t, end in segs:
+            if t == turn:
+                cut += max(0.0, end - max(prev, now))
+            else:
+                out.append([t, end - cut])
+            prev = end
+        self.played[cid] = out
+
     def make_recent_sink(self):
         """brain.remote_sink, the fallback for a turn nobody asked for. The
         brain pins it per turn (pin); used unpinned, each call goes to
@@ -889,6 +959,7 @@ class BrowserBridge:
             return f
         _sink.reply_done = _call("reply_done")
         _sink.send = _call("send")
+        _sink.turn = _call("turn")
         _sink.stop = every.stop
         _sink.pin = self.pin
         return _sink
@@ -973,7 +1044,8 @@ class BrowserBridge:
         # a client without it falls back to interrupt_press
         # "attach": the MB a device may have waiting (Attachments); a client
         # without it sends each item whole and discards only all at once
-        await conn.ws.send(json.dumps(self.identity | {"controls": 1}
+        # "turns": its audio comes tagged by turn (TURNS)
+        await conn.ws.send(json.dumps(self.identity | {"controls": 1, "turns": 1}
                                       | ({"attach": ATTACH_MAX >> 20} if self.attach else {})))
         await conn.ws.send(json.dumps(self._tasks or self.tasks_frame()))
         if conn.id in self._cook:
@@ -1189,6 +1261,7 @@ class BrowserBridge:
             self._send(conn, {"type": "endpoint", "speech": False})
             return
         conn.recording = True
+        conn.pressed_at = time.monotonic()
         conn.latched = conn.tap_dropped = False
         conn.release_text = None
         conn._released.clear()
@@ -1511,6 +1584,7 @@ class BrowserBridge:
                         self._send(conn, {"type": "endpoint", "speech": end == "end"})
         finally:
             conn.recording = False
+            self.held(conn.id, getattr(conn, "pressed_at", None))
         if not frames or conn.tap_dropped:
             return None
         return np.concatenate(frames)
@@ -1547,6 +1621,16 @@ class BrowserBridge:
                 return
             if not c.audio:
                 return
+            if conn.id:
+                now = time.monotonic()
+                segs = self.played.setdefault(conn.id, [])
+                while segs and segs[0][1] + AUDIBLE_SLACK_S < now:
+                    segs.pop(0)
+                end = max(segs[-1][1] if segs else 0.0, now) + len(pcm) / rate
+                if segs and segs[-1][0] == c.turn_sent:
+                    segs[-1][1] = end
+                else:
+                    segs.append([c.turn_sent, end])
             try:
                 frame = struct.pack("<I", rate) + pcm.tobytes()
                 asyncio.run_coroutine_threadsafe(c.ws.send(frame), loop)
@@ -1573,17 +1657,29 @@ class BrowserBridge:
         def _reply_done():
             _send({"type": "reply_done"})
 
-        def _stop():
+        def _turn(t):
+            """The audio that follows belongs to turn t (TURNS): marked once
+            per change, ahead of it on the same socket."""
+            c = live()
+            if c is None or t is None or t == c.turn_sent:
+                return
+            c.turn_sent = t
+            _send({"type": "turn", "id": t})
+
+        def _stop(turn=None):
             """An interrupt: tell the browser to discard every chunk
             already sent but not yet played, mirrors mouth.shut_up()
-            on this end."""
+            on this end. With `turn`, only that turn's (a client on TURNS;
+            an older one still drops everything)."""
             c = live()
             if c is not None and c.call is not None:
                 c.overlay.clear()       # never "stop" a call's own audio
                 return
-            _send({"type": "stop"})
+            self._played_out(conn.id, turn, turn is not None and getattr(c, "turns", False))
+            _send({"type": "stop"} | ({"turn": turn} if turn is not None else {}))
 
         _sink.reply_done = _reply_done
+        _sink.turn = _turn
         _sink.stop = _stop
         _sink.send = _send
         _sink.conn_id = conn.id
@@ -1611,9 +1707,9 @@ class BrowserBridge:
             for conn in conns():
                 self.make_sink(conn).reply_done()
 
-        def _stop():
+        def _stop(turn=None):
             for conn in conns():
-                self.make_sink(conn).stop()
+                self.make_sink(conn).stop(turn)
 
         def _send(obj: dict):
             for conn in conns():

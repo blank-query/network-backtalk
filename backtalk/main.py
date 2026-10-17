@@ -83,7 +83,7 @@ from backtalk.mouth import DIRECTION_HOOKS, Mouth, synth_stream, warm as warm_mo
 from backtalk.ptt import PTTListener
 from backtalk.vlog import log
 from backtalk.web import (Attachments, BrowserBridge, ListenStream, beep, chime, image_card, IMAGE_TYPES, NO_IMAGE_MODELS,
-                          is_text, file_card, file_frames)
+                          NO_REPORT, is_text, file_card, file_frames)
 
 NAME = CFG["name"]
 # When the last spoken (not typed) question came in, any device; see handle().
@@ -672,6 +672,53 @@ def barges_in(text, heard):
     the reply, which plays on. `heard` (the enrolled voices) no longer
     decides; kept for the log line."""
     return says_name(text)
+
+
+def stop_drops_turn(active, heard, asking: bool) -> bool:
+    """Interrupt (the button, "<name>, stop", a barge-in, the Interrupt
+    press) stops what sir is HEARING (sir, 2026-10-17). `active`: the live
+    turn's id (None: nothing in flight); `heard`: the turn whose audio is
+    playing (None: nothing). The voice is always cut; this decides whether
+    the live turn's answer is dropped too. Yes when its own audio is what
+    plays, or it is asking permission. No when another turn's audio plays
+    (an earlier reply still playing out on a phone, with the new turn's
+    first sentence queued behind it): only that one is dropped, and the new
+    answer plays on. With nothing playing at all, yes: the tap is aimed at
+    the answer being worked on."""
+    return active is not None and (asking or heard is None or heard == active)
+
+
+def heard_turn(b, bridge, conn=None, report=NO_REPORT):
+    """The turn sir is hearing: what the device said it was playing
+    (`report`, a client on TURNS), else the bridge's estimate for that
+    device or this machine's own voice; for this machine (conn None) its
+    own voice first, then any device."""
+    if report is not NO_REPORT:
+        return report
+    dev = bridge.heard(getattr(conn, "id", None)) if bridge is not None else None
+    local = b.mouth.playing_turn if b.mouth.speaking else None
+    first, then = (dev, local) if conn is not None else (local, dev)
+    return first if first is not None else then
+
+
+async def cut_reply(b, bridge, why: str, asking: bool, conn=None, report=NO_REPORT):
+    """The voice stops now. The live turn's rest is dropped too, unless
+    another turn's audio is what plays (stop_drops_turn): then only that
+    turn's audio goes, here and on the devices, and later turns' stay
+    queued. Never the SDK interrupt: helpers and tools keep running (see
+    brain.interrupt)."""
+    active, heard = b.live_turn, heard_turn(b, bridge, conn, report)
+    src = "reported" if report is not NO_REPORT else "estimated"
+    if stop_drops_turn(active, heard, asking):
+        log(f"[turn] cut off mid-reply by {why} (output dropped, helpers untouched;"
+            f" turn {active}, heard {heard}, {src})")
+        await b.interrupt()
+        heard = None            # everything goes
+    elif active is not None:
+        log(f"[turn] {why} stopped turn {heard}'s audio ({src}); turn {active} carries on")
+    b.mouth.shut_up(heard)
+    if b.remote_sink is not None:
+        b.remote_sink.stop(heard)
 
 
 def second_read(text, pcm):
@@ -1402,17 +1449,12 @@ async def amain():
         if hasattr(sink, "send"):
             sink.send({"type": "line", "who": "jarvis", "text": text})
 
-    async def _stop_reply(b, why: str):
-        """A tap on Interrupt, "<name>, stop", a barge-in: the voice stops
-        now and the rest of the reply is dropped. Never the SDK interrupt:
-        helpers and tools keep running (see brain.interrupt)."""
-        if b.turn_active:
-            log(f"[turn] cut off mid-reply by {why} (output dropped, helpers untouched)")
+    async def _stop_reply(b, why: str, conn=None, report=NO_REPORT):
+        """A tap on Interrupt, "<name>, stop", a barge-in (see _cut)."""
+        asking = _PERM["fut"] is not None and not _PERM["fut"].done()
+        if asking and b.live_turn is not None:
             _deny_pending()      # an ask never outlives its turn
-            await b.interrupt()
-        b.mouth.shut_up()
-        if b.remote_sink is not None:
-            b.remote_sink.stop()
+        await cut_reply(b, bridge, why, asking, conn, report)
 
     async def _abort_do(b, tasks, pick, sink) -> bool:
         if pick == "all":
@@ -1533,7 +1575,7 @@ async def amain():
                 if b.remote_sink is not None:
                     b.remote_sink.stop()
             else:
-                await _stop_reply(b, "new input")
+                await _stop_reply(b, "new input", getattr(remote_sink, "conn", None))
         if verb:
             await run_console(verb, remote_sink)
             return True
@@ -2068,6 +2110,7 @@ async def amain():
                 log(f"[announce] muted, not spoken to {bridge.name_of(conn.id)}: {text[:120]}")
                 return
             sink = bridge.make_sink(conn, low=True)
+            sink.turn(signals.new_turn())       # a turn of its own on the device (TURNS)
             chunks = list(synth_stream(text))
             rate = chunks[0][0]
             pcm = np.concatenate([chime(rate)] + [p for _, p in chunks])
@@ -2270,15 +2313,17 @@ async def amain():
             bridge.attach = Attachments(os.path.join(CFG["agent_dir"], ".backtalk"))
             bridge.on_phone_result = _on_phone_result
 
-            async def _control(conn, kind):
+            async def _control(conn, kind, report=NO_REPORT):
                 """A tap on Interrupt stops the reply; a hold (abort) then
                 reads back what's running and asks which to stop."""
-                log(f"[web] {kind} from {bridge.name_of(conn.id) or str(conn.id)[:8]}")
+                log(f"[web] {kind} from {bridge.name_of(conn.id) or str(conn.id)[:8]}"
+                    + ("" if report is NO_REPORT else f" (playing turn {report})"))
                 sink = bridge.make_sink(conn)
-                await _stop_reply(brain_for(conn), f"the {kind} button")
+                await _stop_reply(brain_for(conn), f"the {kind} button", conn, report)
                 if kind == "abort":
                     await run_console("abort", sink)
-            bridge.on_control = lambda conn, kind: asyncio.ensure_future(_control(conn, kind))
+            bridge.on_control = lambda conn, kind, report=NO_REPORT: asyncio.ensure_future(
+                _control(conn, kind, report))
             bridge.on_heard = _heard
             bridge.on_file_get = _file_get
             bridge.on_reopen = lambda conn, path: _show(path, bridge.make_sink(conn), button=False)
@@ -2327,7 +2372,7 @@ async def amain():
         ws_press_fut: asyncio.Future | None = None
         mic_gen_seen = _MIC["gen"]
 
-        async def _begin_capture(interrupt: bool = True):
+        async def _begin_capture(interrupt: bool = True, conn=None):
             """Shared by the local key and a browser press. The local
             key always interrupts (dev tool, unchanged). A browser
             press interrupts only for the Interrupt button; a plain
@@ -2338,17 +2383,18 @@ async def amain():
             if interrupt:
                 perm_wait = (_PERM["fut"] is not None
                              and not _PERM["fut"].done())
-                if brain.turn_active and not perm_wait:
-                    log("[turn] cut off mid-reply (output dropped, helpers untouched), new capture started")
-                    await brain.interrupt()
-                # Unconditional, same reasoning as handle(): mouth can
-                # still be sending audio long after turn_active goes
-                # False (real-time pacing), so stopping it can't be
-                # gated on the SDK turn still being live.
-                mouth.shut_up()
+                if perm_wait:
+                    # the press answers the ask: only the voice stops
+                    mouth.shut_up()
+                    if brain.remote_sink is not None:
+                        brain.remote_sink.stop()
+                else:
+                    # Unconditional, same reasoning as handle(): mouth can
+                    # still be sending audio long after turn_active goes
+                    # False (real-time pacing), so stopping it can't be
+                    # gated on the SDK turn still being live.
+                    await cut_reply(brain, bridge, "a new capture", False, conn)
                 signals.static_stop()
-                if brain.remote_sink is not None:
-                    brain.remote_sink.stop()
             signals.set_state("listening")
             mouth.ducker.speech_start()
             _MIC["btn"] = True
@@ -2542,7 +2588,7 @@ async def amain():
             if ws_press_fut is not None and ws_press_fut in done:
                 conn, is_interrupt = ws_press_fut.result(); ws_press_fut = None
                 press_t = conn.active = time.monotonic()
-                await _begin_capture(interrupt=is_interrupt)
+                await _begin_capture(interrupt=is_interrupt, conn=conn)
                 log("[web] recording (release to send)..."
                     + ("" if is_interrupt else " (queued)"))
                 g = _MIC["gen"]

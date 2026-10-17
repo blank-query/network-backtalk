@@ -540,6 +540,13 @@ class Mouth:
         # is (nothing dropped, the reply keeps queueing) and carries on.
         self._go = threading.Event()
         self._go.set()
+        # Turn ids (signals.new_turn): the brain sets `turn` as each of its
+        # turns starts and say_chunk tags with it; say() (the voice line's
+        # own lines) takes a fresh one. playing_turn is the item playing
+        # now; a shut_up(turn) drops that turn's items as they come up.
+        self.turn = None
+        self.playing_turn = None
+        self._dropped: set = set()
         self.busy = lambda: False   # the brain's turn still running (see brain.py)
         # The one persistent output stream (audio law #1).
         # Worker-thread-only, never touch from other threads.
@@ -564,9 +571,11 @@ class Mouth:
         return self._speaking.is_set()
 
     def say(self, text: str, remote_sink=None):
-        """Queue text (split to sentences) for speech."""
+        """Queue text (split to sentences) for speech, as a turn of its own."""
+        from backtalk import signals
+        turn = signals.new_turn()
         for s in split_sentences(speakable(text)):
-            self._q.put((s, None, remote_sink))
+            self._q.put((s, None, remote_sink, turn))
 
     def say_chunk(self, text: str, directions=None, remote_sink=None):
         """Queue text as ONE TTS request, no sentence splitting, fuller
@@ -584,7 +593,10 @@ class Mouth:
         overlap."""
         text = speakable(text)      # an image-only line still carries its directions
         if text or directions:      # directions alone: see _run
-            self._q.put((text, directions or None, remote_sink))
+            if self.turn is None:
+                from backtalk import signals
+                self.turn = signals.new_turn()
+            self._q.put((text, directions or None, remote_sink, self.turn))
 
     def pause(self):
         """Hold local playback (the talk key is down): the reply waits, whole."""
@@ -593,8 +605,15 @@ class Mouth:
     def resume(self):
         self._go.set()
 
-    def shut_up(self):
-        """Barge-in: stop current playback and flush everything queued."""
+    def shut_up(self, turn=None):
+        """Barge-in: stop current playback and flush everything queued.
+        With `turn`, only that turn: it stops if it's what's playing, and
+        its queued sentences are skipped; later turns' stay queued."""
+        if turn is not None:
+            self._dropped.add(turn)
+            if self.playing_turn == turn:
+                self._stop.set()
+            return
         self._stop.set()
         try:
             while True:
@@ -628,13 +647,12 @@ class Mouth:
                 except Exception as e:
                     log(f"[mouth] idle warm-up failed: {e}")
                 continue
-            if isinstance(item, tuple) and len(item) == 3:
-                sentence, directions, remote_sink = item
-            elif isinstance(item, tuple):
-                sentence, directions = item
-                remote_sink = None
-            else:
-                sentence, directions, remote_sink = item, None, None
+            sentence, directions, remote_sink, turn = item
+            if turn in self._dropped:
+                if self._q.empty() and self._speaking.is_set():
+                    self._reply_finished(remote_sink)
+                continue
+            self.playing_turn = turn
             if not sentence:
                 # Directions left over at the end of a reply (a tag after
                 # the last sentence): fire once the speech before them has
@@ -657,7 +675,7 @@ class Mouth:
             self._speaking.set()
             self.ducker.speech_start()
             try:
-                self._play_stream(sentence, directions, remote_sink=remote_sink)
+                self._play_stream(sentence, directions, remote_sink=remote_sink, turn=turn)
             except Exception as e:
                 log(f"[mouth] synth/play error: {e}")
             finally:
@@ -742,7 +760,7 @@ class Mouth:
         self._out_rate = None
 
     def _play_stream(self, sentence: str, directions=None, block: int = 2205,
-                     prebuffer_s: float = 0.75, remote_sink=None):
+                     prebuffer_s: float = 0.75, remote_sink=None, turn=None):
         """Stream-synthesize and play with the head-start buffer (audio
         law #2). stop() reacts ~50ms. The sample rate comes from
         whichever engine actually answered.
@@ -792,6 +810,9 @@ class Mouth:
             self.bus.set_playing_conn(getattr(remote_sink, "conn_id", None))
             if directions:
                 _fire_directions(directions, remote_sink, phone, self.bus)
+            mark = getattr(remote_sink, "turn", None)
+            if mark is not None:
+                mark(turn)      # the device tags this audio with its turn (web.py)
 
             started = False
 

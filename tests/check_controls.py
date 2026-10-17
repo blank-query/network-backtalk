@@ -123,7 +123,7 @@ async def main():
     # ---- the bridge: press queues, never a control; interrupt and abort are
     br = BrowserBridge({})
     got = []
-    br.on_control = lambda conn, kind: got.append(kind)
+    br.on_control = lambda conn, kind, *_: got.append(kind)
     conn = Conn(WS([json.dumps({"type": "hello", "device_id": "d"}), json.dumps({"type": "press"}),
                     json.dumps({"type": "interrupt"}), json.dumps({"type": "abort"})]), br)
     await conn.reader()

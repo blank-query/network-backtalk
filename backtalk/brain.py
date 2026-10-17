@@ -88,14 +88,16 @@ def _sentence_end(buf: str):
 # hand-off or an announcement carries a whole brief, and a recipe's steps
 # run long, so those get 4000 (a 1,100-character cook-with-me brief failed silently, 2026-10-09).
 _DIRECTION_TAG = re.compile(r"<<((?:session|announce|steps) [^<>]{1,4000}|[^<>]{1,600})>>")
-def _line(sink, text: str, timing: str = ""):
+def _line(sink, text: str, timing: str = "", turn=None):
     """The reply as text for the asking device's terminal (see web.py).
     `timing` ("heard 0.8s · first word 2.1s") is shown dim, never spoken;
-    it rides in "show" because the phone app relays only who, text, show."""
+    it rides in "show" because the phone app relays only who, text, show.
+    `turn`: the reply's turn id, as its audio carries it."""
     send = getattr(sink, "send", None)
     if send is not None:
         send({"type": "line", "who": "jarvis", "text": text}
-             | ({"show": {"time": timing}} if timing else {}))
+             | ({"show": {"time": timing}} if timing else {})
+             | ({"turn": turn} if turn is not None else {}))
 
 
 def _pin(sink):
@@ -177,6 +179,11 @@ class WarmBrain:
         # True from the first content of a turn until its ResultMessage.
         # interrupt() is a no-op when this is False: nothing in flight,
         # nothing to discard.
+        # Its id (signals.new_turn), new each time a turn starts (the
+        # _turn_active setter), handed to the mouth so every sentence and
+        # line of it carries it: an Interrupt drops the live turn only when
+        # its audio is what sir hears (main.py's stop_drops_turn).
+        self.turn_id = None
         self._turn_active = False
         # When the main conversation last showed life (a send, or turn
         # content with no parent_tool_use_id). See _release_if_stuck.
@@ -241,6 +248,7 @@ class WarmBrain:
                 self._client = ClaudeSDKClient(options=_opts(resume))
                 await self._client.connect()
                 log(f"[brain] resumed session {resume[:8]}")
+                await self._remote_control()
                 self._start_reader()
                 self.clear_tasks()
                 return
@@ -255,8 +263,27 @@ class WarmBrain:
                     pass
         self._client = ClaudeSDKClient(options=_opts(None))
         await self._client.connect()
+        await self._remote_control()
         self._start_reader()
         self.clear_tasks()
+
+    async def _remote_control(self):
+        """Connect this session to Remote Control (config remote_control), so
+        claude.ai/code, the phone app, and other machines' sessions can reach
+        it. The same private control call as get_usage: the SDK has no public
+        one, and `/rc` is refused headless. Bounded and logged only: it must
+        never cost the session its start. The main session only: a dedicated
+        one (a device's cooking session, a peer's) would list as a twin."""
+        rc = CFG.get("remote_control")
+        if not rc or not self._persist:
+            return
+        name = rc if isinstance(rc, str) else (CFG.get("peer_name") or "Desktop Jarvis")
+        try:
+            r = await self._client._query._send_control_request(
+                {"subtype": "remote_control", "enabled": True, "name": name}, 30)
+            log(f"[brain] remote control on as {name!r}: {(r or {}).get('session_url')}")
+        except Exception as e:
+            log(f"[brain] remote control failed: {e!r}")
 
     def _dispatch_next(self):
         """Send the next queued utterance, if the session is free.
@@ -382,6 +409,25 @@ class WarmBrain:
         there's anything for interrupt() to actually interrupt, and
         whether to log it as one."""
         return self._turn_active
+
+    @property
+    def _turn_active(self) -> bool:
+        return getattr(self, "_active", False)
+
+    @_turn_active.setter
+    def _turn_active(self, on: bool):
+        """Every start of a turn (asked, unprompted, a capture) gets a new
+        turn id, and the mouth tags what it's given with it from then on."""
+        if on and not self._turn_active:
+            self.turn_id = signals.new_turn()
+            if self.mouth is not None:
+                self.mouth.turn = self.turn_id
+        self._active = on
+
+    @property
+    def live_turn(self):
+        """The id of the turn in flight, or None."""
+        return self.turn_id if self._turn_active else None
 
     async def set_permission_mode(self, backtalk_mode: str):
         """Live flip, no reconnect, conversation intact ("ask" maps to
@@ -674,7 +720,7 @@ class WarmBrain:
                     self.bus.static_stop()
                 log(f"[{self.label}] (quiet) {f'({timing}) ' if timing else ''}{s}"
                     + (f"  <directions: {pending}>" if pending else ""))
-                _line(turn_sink, s, timing)
+                _line(turn_sink, s, timing, self.turn_id)
                 if pending:
                     self.mouth.say_chunk("", pending, turn_sink)
                 pending = []
@@ -701,14 +747,14 @@ class WarmBrain:
                 timing = self._timing()
                 log(f"[{self.label}] {f'({timing}) ' if timing else ''}{s}"
                     + (f"  <directions: {pending}>" if pending else ""))
-                _line(turn_sink, s, timing)
+                _line(turn_sink, s, timing, self.turn_id)
                 self.mouth.say_chunk(s, pending, turn_sink)
                 pending = []
                 first = False
             else:
                 log(f"[{self.label}] {s}"
                     + (f"  <directions: {pending}>" if pending else ""))
-                _line(turn_sink, s)
+                _line(turn_sink, s, turn=self.turn_id)
                 batch.append(s)
                 if len(batch) >= 2:
                     flush()
@@ -945,6 +991,7 @@ class WarmBrain:
             max_buffer_size=50 * 1024 * 1024,
             extra_args=CFG["cli_args"]))
         await self._client.connect()
+        await self._remote_control()
         # A new CLI process: its task level starts empty and nothing
         # reports the old process's tasks again.
         self.clear_tasks()
