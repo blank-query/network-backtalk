@@ -24,3 +24,10 @@ show.json
 .python-version
 # Config backups the setup wizard leaves behind.
 *.json.*.bak
+
+# personal config backups and session copies
+backtalk.json*
+!backtalk.json.example
+.backtalk_session*
+*.bak
+*.bak-*

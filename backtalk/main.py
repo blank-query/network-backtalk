@@ -82,7 +82,7 @@ from backtalk.ears import (DEFERRED, Ears, Session, babble, explain_audio_failur
 from backtalk.mouth import DIRECTION_HOOKS, Mouth, synth_stream, warm as warm_mouth
 from backtalk.ptt import PTTListener
 from backtalk.vlog import log
-from backtalk.web import (Attachments, BrowserBridge, ListenStream, beep, chime, image_card, IMAGE_TYPES, NO_IMAGE_MODELS,
+from backtalk.web import (Attachments, BrowserBridge, ListenStream, beep, chime, image_card, IMAGE_TYPES,
                           NO_REPORT, is_text, file_card, file_frames)
 
 NAME = CFG["name"]
@@ -1865,7 +1865,7 @@ async def amain():
                     raise PermissionError("outside the agent's folders")
                 if os.path.splitext(path)[1].lower() in IMAGE_TYPES:
                     model = bridge.devices().get(getattr(asker, "conn_id", None), {}).get("model")
-                    if model in NO_IMAGE_MODELS:
+                    if model in CFG.get("no_image_models", ()):
                         raise ValueError(f"the {model} has no screen for pictures")
                     text = image_card(path)
                 elif not is_text(path):

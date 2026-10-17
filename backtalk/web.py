@@ -341,8 +341,6 @@ FILE_CHUNK = 256 * 1024
 # What one device may have waiting to ride along with its next question,
 # all items together (Attachments); the identity frame tells the app.
 ATTACH_MAX = 50 * 2**20
-# devices with no screen for a picture (the hello's "model"): never sent one
-NO_IMAGE_MODELS = ("Desk", "Galaxy Watch")
 
 
 def image_card(path: str) -> str:

@@ -29,13 +29,13 @@ first sentence is audible while later ones are still rendering. Playback
 is cancellable mid-word: set the stop event and the speaker goes silent
 within one audio block plus the device buffer (~0.15s).
 
-HARD-WON AUDIO LAW #1, ONE long-lived OutputStream, reused for every
+HARD-WON AUDIO LAW #1: ONE long-lived OutputStream, reused for every
 sentence for the life of the process. A fresh stream per sentence gives
 an audible onset blip or a beat of dead air on plenty of audio setups
 (USB interfaces, Bluetooth, streaming mixers that latch onto each new
 stream late). Proven by A/B test; do not "simplify" this away.
 
-HARD-WON AUDIO LAW #2, buffer ~0.75s of synthesized audio before a
+HARD-WON AUDIO LAW #2: buffer ~0.75s of synthesized audio before a
 sentence starts playing, so a slower machine never underruns into
 slow-motion garble.
 """

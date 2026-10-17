@@ -168,7 +168,7 @@ def main():
         sys.exit(f"no peer {peer!r} in the config (peers: {', '.join(CFG.get('peers') or {}) or 'none'})")
     token = peer_token()
     if not token:
-        sys.exit("no peer token (env JARVIS_PEER_TOKEN, or the keyring item service backtalk-peer user token)")
+        sys.exit("no peer token (env JARVIS_PEER_TOKEN, or the keyring item service <peer_token_slot> user token)")
     if p.get("mac"):
         wake(p["mac"], p.get("broadcast", "<broadcast>"))
         print(f"[sent a wake packet to {peer}]", file=sys.stderr, flush=True)

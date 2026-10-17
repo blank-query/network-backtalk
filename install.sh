@@ -16,7 +16,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# backtalk installer — environment, engines, models. Run once.
+# backtalk installer, environment, engines, models. Run once.
 # Safe to re-run; every step skips what's already done.
 set -e
 cd "$(dirname "$0")"
@@ -47,13 +47,13 @@ if ! command -v espeak-ng >/dev/null 2>&1 && \
   case "$(uname -s)" in
     Darwin)
       if command -v brew >/dev/null 2>&1; then brew install espeak-ng
-      else echo "   Homebrew not found — install it (https://brew.sh), then re-run."; exit 1; fi ;;
+      else echo "   Homebrew not found, install it (https://brew.sh), then re-run."; exit 1; fi ;;
     Linux)
       if command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y espeak-ng
       elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y espeak-ng
       elif command -v pacman >/dev/null 2>&1; then sudo pacman -S --noconfirm espeak-ng
       else echo "   Install espeak-ng with your package manager, then re-run."; exit 1; fi ;;
-    *) echo "   Unknown platform — install espeak-ng manually, then re-run."; exit 1 ;;
+    *) echo "   Unknown platform, install espeak-ng manually, then re-run."; exit 1 ;;
   esac
 else
   echo "-- espeak-ng: already present"
@@ -92,7 +92,7 @@ echo "Next:"
 echo "  1. Point it at your agent: edit backtalk.json (agent_dir + name),"
 echo "     or open this folder in Claude Code and say:"
 echo "         read backtalk.md and set me up"
-echo "  2. ./run.sh — hold the key, talk, let go."
+echo "  2. ./run.sh, hold the key, talk, let go."
 echo ""
 echo "macOS: the FIRST run will ask for Microphone permission, and the"
 echo "hold-to-talk key needs Input Monitoring for your terminal app"

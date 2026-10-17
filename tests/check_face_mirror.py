@@ -78,9 +78,9 @@ async def check(cfg_file, port):
 async def main():
     here = os.path.join(os.path.dirname(__file__), "..")
     await check(os.path.join(here, "backtalk.json"), 18798)
-    friday = "/home/user/projects/Friday/backtalk.json"
-    if os.path.exists(friday):
-        await check(friday, 18799)
+    extra = os.environ.get("BACKTALK_CHECK_EXTRA_CONFIG")   # a second assistant's config, optional
+    if extra and os.path.exists(extra):
+        await check(extra, 18799)
 
 
 asyncio.run(main())

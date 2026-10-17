@@ -15,13 +15,13 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Spotify ducking (macOS) — music dips while the voice talks.
+"""Spotify ducking (macOS), music dips while the voice talks.
 
 Relative duck: if Spotify is playing above THRESHOLD, drop it to
 max(THRESHOLD, current * PCT) while the assistant speaks; restore after.
 Quiet music is left alone. The restore is DEBOUNCED: the mouth goes
 momentarily idle between streamed chunks, and bouncing the volume every
-gap is seasickness — restore only after sustained silence. Never
+gap is seasickness, restore only after sustained silence. Never
 launches Spotify; every call no-ops if it isn't running.
 
 On non-macOS platforms every method is a silent no-op (the AppleScript
@@ -105,7 +105,7 @@ class Ducker:
             self._timer = None
 
     def restore_now(self):
-        """Synchronous restore for shutdown paths — the debounce timer is
+        """Synchronous restore for shutdown paths, the debounce timer is
         a daemon thread and dies with the process, which otherwise leaves
         the music stuck quiet after you hang up. Call before any exit."""
         with self._lock:

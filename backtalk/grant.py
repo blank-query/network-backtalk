@@ -139,7 +139,7 @@ def main():
         sys.exit("no home bridge: pass --pi ws://host:port")
     tok = peer_token()
     if not tok:
-        sys.exit("no peer token (env JARVIS_PEER_TOKEN, or the keyring item service backtalk-peer user token)")
+        sys.exit("no peer token (env JARVIS_PEER_TOKEN, or the keyring item service <peer_token_slot> user token)")
     print(grant(CFG, device, pi, tok))
 
 

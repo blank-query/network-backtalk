@@ -33,7 +33,7 @@ by a direct ask. One background report and the whole session's answers
 ran one turn behind, permanently (fixed by
 the turn stream redesign). So instead: ONE reader task owns `receive_messages()`
 for the session's lifetime and speaks every turn as it arrives,
-whoever started it. Sending is just sending, `ask()` calls `query()`
+whoever started it. Sending is just sending: `ask()` calls `query()`
 and returns; it never assumes the next reply is its own.
 
 The session's cwd is YOUR agent's folder (agent_dir in backtalk.json),
@@ -277,7 +277,7 @@ class WarmBrain:
         rc = CFG.get("remote_control")
         if not rc or not self._persist:
             return
-        name = rc if isinstance(rc, str) else (CFG.get("peer_name") or "Desktop Jarvis")
+        name = rc if isinstance(rc, str) else (CFG.get("peer_name") or CFG.get("name") or "backtalk")
         try:
             r = await self._client._query._send_control_request(
                 {"subtype": "remote_control", "enabled": True, "name": name}, 30)

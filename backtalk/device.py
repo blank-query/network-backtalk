@@ -57,7 +57,7 @@ def main():
         sys.exit(__doc__)
     tok = peer_token()
     if not tok:
-        sys.exit("no peer token (env JARVIS_PEER_TOKEN, or the keyring item service backtalk-peer user token)")
+        sys.exit("no peer token (env JARVIS_PEER_TOKEN, or the keyring item service <peer_token_slot> user token)")
     url = f"ws://127.0.0.1:{CFG.get('web', {}).get('port', 8792)}"
     me = CFG.get("peer_name") or CFG["name"]
     if args[0] == "--list":

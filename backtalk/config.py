@@ -166,8 +166,8 @@ DEFAULTS = {
     # Connect the main session to Remote Control at every start, so
     # claude.ai/code, the Claude phone app, and your sessions on other
     # machines can see and message it (needs a full claude.ai login, not an
-    # API key or a local model). true names it peer_name (else "Desktop
-    # Jarvis"); a string names it that. OFF by default: anyone signed in to
+    # API key or a local model). true names it peer_name (else name);
+    # a string names it that. OFF by default: anyone signed in to
     # your account can then drive this session, and its transcript syncs
     # through Anthropic.
     "remote_control": False,
@@ -257,7 +257,10 @@ DEFAULTS = {
     "voiceprint_threshold": 0.4,
     # Enrolled voices whose speech is dropped, never answered: another
     # agent's voice reaching an open mic (enroll it like a person).
-    "ignore_voices": ["desktop jarvis"],
+    "ignore_voices": [],
+    # Device models (the hello's "model") with no screen for a picture:
+    # never sent one.
+    "no_image_models": ["Desk", "Watch"],
     # Debugging: a folder to save every utterance's audio to (one wav
     # each, named by time), so a mishearing can be replayed. "" = off.
     "stt_save_dir": "",
@@ -365,6 +368,9 @@ DEFAULTS = {
     # How this agent names itself to its peers ("Pi Jarvis"), and to the
     # devices that can pick it.
     "peer_name": "",
+    # The keyring service holding the peer secret when JARVIS_PEER_TOKEN
+    # is unset (secret-tool, service <this> user token).
+    "peer_token_slot": "backtalk-peer",
     # WHO THIS IS, for a device that can pick between assistants: the
     # frame color its face gets ("#rrggbb"), the ai-visualizer face it
     # shows ("rain-f"), its face's mode_hues there ({} = the Pi face
@@ -458,14 +464,14 @@ DISCIPLINE = (
 
 def peer_token() -> str:
     """The shared peer secret: env JARVIS_PEER_TOKEN, else the desktop
-    keyring (secret-tool, service backtalk-peer user token), else ""
+    keyring (secret-tool, service <peer_token_slot> user token), else ""
     (no peers)."""
     tok = os.environ.get("JARVIS_PEER_TOKEN", "").strip()
     if tok:
         return tok
     try:
         import subprocess
-        return subprocess.run(["secret-tool", "lookup", "service", "backtalk-peer", "user", "token"],
+        return subprocess.run(["secret-tool", "lookup", "service", str(CFG.get("peer_token_slot") or "backtalk-peer"), "user", "token"],
                               capture_output=True, text=True, timeout=10).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
