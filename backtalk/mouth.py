@@ -65,9 +65,24 @@ _UNSPEAKABLE = re.compile(r"!\[[^\]]*\]\([^)]*\)?|<<[^<>]*>>|data:[\w.+-]+/[\w.+
                           r"|[A-Za-z0-9+/=]{40,}")
 
 
+# Markdown symbols the voice would read out ("asterisk asterisk sauce"),
+# stripped from speech only; the screens keep the text as written. A star
+# between digits is spoken as "times"; underscores go only at a word's
+# edges, so snake_case stays whole; "#" only as a header ("## Ingredients",
+# never "#5"); "- " or "+ " only as a bullet at a line's start.
+_MARKDOWN = [(re.compile(r"(\d)\s*\*\s*(?=\d)"), r"\1 times "),
+             (re.compile(r"[*`]+"), ""),
+             (re.compile(r"(?<!\w)_+|_+(?!\w)"), ""),
+             (re.compile(r"(?m)(?:^|(?<=\s))#{1,6}(?=\s)"), ""),
+             (re.compile(r"(?m)^\s*[-+]\s+"), "")]
+
+
 def speakable(text: str) -> str:
     """The text with everything that must never reach the voice removed."""
-    return " ".join(_UNSPEAKABLE.sub(" ", text).split())
+    text = _UNSPEAKABLE.sub(" ", text)
+    for pat, rep in _MARKDOWN:
+        text = pat.sub(rep, text)
+    return " ".join(text.split())
 
 _pipe = None
 _pipe_lock = threading.Lock()
