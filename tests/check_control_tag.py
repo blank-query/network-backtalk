@@ -148,6 +148,16 @@ async def _run():
     assert said == ["Hands-free off."], said
     said.clear()
 
+    # its own session's reply holds the clock (2026-10-18: only that one; another session's no longer does)
+    hook(["control hands_free"], sink)
+    assert await until(lambda: conn.listening)
+    _brains[0].turn_active = True
+    await asyncio.sleep(2.5)
+    assert conn.listening, "its own reply running: no timeout"
+    _brains[0].turn_active = False
+    assert await until(lambda: not conn.listening, 4), "reply over: times out"
+    said.clear()
+
     # refused: permissions, and a peer agent's session
     n = len(commands)
     hook(["control noask", "control stop_asking_for_permission"], sink)

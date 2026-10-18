@@ -2184,12 +2184,15 @@ async def amain():
             if not limit:
                 return
             now = time.monotonic()
-            if any(b.turn_active or b.mouth.speaking
-                   for b in [brain, *sessions.values()]):
+            # Only the device's own session's reply counts as its
+            # conversation (2026-10-18: a peer's turn on another session
+            # kept restarting a stuck phone's clock, as any helper's would).
+            busy = lambda b: b.turn_active or b.mouth.speaking
+            if busy(brain):
                 _MIC["active"] = now
-                for c in conns:
+            for c in conns:
+                if busy(brain_for(c)):
                     c.active = now
-                return
             # Mid-capture, wait: it may be you talking through noise. Only
             # transcribed words reset the clock, so pure noise (which ends
             # as an empty capture, 30 s at most) can't keep it on forever.
